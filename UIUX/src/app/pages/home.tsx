@@ -108,6 +108,7 @@ export function Home() {
       sessionStore.setSessionId(res.data.session_id);
       sessionStore.setPickId('');
       sessionStore.setPicked({});
+      sessionStore.setCandidatePool([]);
       track('session_start', { prompt: finalPrompt }, res.data.session_id, sessionStore.getDeviceId());
       if (res.data.address_name) {
         setAddressName(res.data.address_name);
@@ -121,6 +122,7 @@ export function Home() {
         sessionStore.setSessionId(fallbackSessionId);
         sessionStore.setPickId('');
         sessionStore.setPicked({});
+        sessionStore.setCandidatePool([]);
         setSubmitError('服务暂不可用，已切到本地候选模式。');
         shouldNavigate = true;
       } else {

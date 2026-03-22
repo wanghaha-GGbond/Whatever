@@ -220,6 +220,16 @@ def _assert_admin_token(request: Request) -> None:
         raise HTTPException(status_code=401, detail="admin token invalid")
 
 
+def _backend_mock_fallback_enabled() -> bool:
+    raw = (os.getenv("BACKEND_ENABLE_MOCK_FALLBACK") or "").strip().lower()
+    if raw in {"1", "true", "yes", "on"}:
+        return True
+    if raw in {"0", "false", "no", "off"}:
+        return False
+    app_env = (os.getenv("APP_ENV") or "").strip().lower()
+    return app_env not in {"production", "prod"}
+
+
 def debug_scenario(request: Request) -> str:
     return request.headers.get("X-Debug-Scenario", "").strip()
 
@@ -605,7 +615,20 @@ async def recommend_candidates(req: CandidateReq, request: Request):
             raise ValueError("高德返回空结果")
         candidates = _select_candidates(pois, intent, limit=req.limit)
     except Exception as exc:
-        logger.warning("高德搜索失败，降级 mock: %r", exc)
+        logger.warning("高德搜索失败: %r", exc)
+        if not _backend_mock_fallback_enabled():
+            return {
+                "code": "UPSTREAM_ERROR",
+                "message": "map service unavailable",
+                "data": {
+                    "session_id": req.session_id,
+                    "summary": "地图服务暂时不可用，请稍后重试",
+                    "candidates": [],
+                    "fallback_used": False,
+                },
+            }
+
+        logger.warning("已启用后端 mock 降级")
         fallback_transport = intent.get("transport", "bike")
         fallback_transport_mode = transport_label(fallback_transport)
         candidates = [
