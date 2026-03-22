@@ -17,7 +17,7 @@ from fastapi import APIRouter, HTTPException, Request, Response
 from pydantic import BaseModel, Field
 
 from .services.intent_parser import (
-    parse_intent, eta_min, budget_text, make_judgement, make_risk_label, transport_label,
+    parse_intent, eta_min, budget_text, make_judgement, make_risk_label, transport_label, DEFAULT_TYPES,
 )
 from .services.amap import search_around, get_type_label, nav_url, regeo, geocode
 from .services import llm
@@ -326,12 +326,19 @@ def _select_candidates(pois: list[dict], intent: dict, limit: int = 5) -> list[d
     noisy = [(s + random.uniform(-RANKING_CFG["noise"]["range"], RANKING_CFG["noise"]["range"]), poi) for s, poi in scored]
     noisy.sort(key=lambda x: x[0], reverse=True)
 
-    # Step 3：类型多样性 — 同类型最多 max_same_type 个
+    # Step 3：类型多样性（动态）
+    # 之前固定 max_same_type=2 会导致「奶茶/快餐」这类单类型场景最多只出 2~5 个候选。
+    # 这里按“类型数 + 目标数量”动态放宽，保证能尽量凑满 limit。
+    unique_types = {get_type_label(p["type"]) for _, p in noisy}
+    base_max_same_type = int(RANKING_CFG["diversity"]["max_same_type"])
+    dynamic_max_same_type = max(base_max_same_type, math.ceil(limit / max(1, len(unique_types))))
+
+    # Step 3：类型多样性 — 同类型最多 dynamic_max_same_type 个
     type_count: dict[str, int] = {}
     pool = []
     for s, poi in noisy:
         type_label = get_type_label(poi["type"])
-        if type_count.get(type_label, 0) < RANKING_CFG["diversity"]["max_same_type"]:
+        if type_count.get(type_label, 0) < dynamic_max_same_type:
             type_count[type_label] = type_count.get(type_label, 0) + 1
             pool.append((s, poi))
         if len(pool) >= limit * RANKING_CFG["diversity"]["pool_multiplier"]:  # 候选池够大就停
@@ -614,6 +621,45 @@ async def recommend_candidates(req: CandidateReq, request: Request):
         if not pois:
             raise ValueError("高德返回空结果")
         candidates = _select_candidates(pois, intent, limit=req.limit)
+
+        # 不足 10 个时，自动扩圈补齐（先同类型扩圈，再用默认综合类型补充）
+        if len(candidates) < req.limit:
+            expanded_radius = min(15000, max(int(intent["radius_m"] * 2), 6000))
+            merged_pois = {p.get("id"): p for p in pois if p.get("id")}
+
+            try:
+                extra_same_type = await search_around(
+                    location=location,
+                    poi_types=intent["poi_types"],
+                    keywords="",
+                    radius=expanded_radius,
+                    limit=25,
+                )
+                for p in extra_same_type:
+                    pid = p.get("id")
+                    if pid and pid not in merged_pois:
+                        merged_pois[pid] = p
+            except Exception as exc:
+                logger.warning("同类型扩圈补齐失败: %s", exc)
+
+            if len(merged_pois) < req.limit and intent["poi_types"] != DEFAULT_TYPES:
+                try:
+                    extra_default = await search_around(
+                        location=location,
+                        poi_types=DEFAULT_TYPES,
+                        keywords="",
+                        radius=expanded_radius,
+                        limit=25,
+                    )
+                    for p in extra_default:
+                        pid = p.get("id")
+                        if pid and pid not in merged_pois:
+                            merged_pois[pid] = p
+                except Exception as exc:
+                    logger.warning("默认类型补齐失败: %s", exc)
+
+            if merged_pois:
+                candidates = _select_candidates(list(merged_pois.values()), intent, limit=req.limit)
     except Exception as exc:
         logger.warning("高德搜索失败: %r", exc)
         if not _backend_mock_fallback_enabled():
