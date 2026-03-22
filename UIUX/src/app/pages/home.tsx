@@ -4,7 +4,7 @@ import { LocationBar } from '../components/location-bar';
 import { ChipGroup } from '../components/chip-group';
 import { PrimaryButton } from '../components/primary-button';
 import { Mic, Loader2, RotateCw, MapPin } from 'lucide-react';
-import { api } from '../lib/api';
+import { ApiError, api } from '../lib/api';
 import { sessionStore } from '../lib/session';
 import { track } from '../lib/analytics';
 import { ENABLE_MOCK_FALLBACK } from '../lib/env';
@@ -40,6 +40,9 @@ export function Home() {
 
   // 页面加载后静默获取位置（不阻塞提交）
   useEffect(() => {
+    // 预热后端（Render Free 冷启动可能较慢），不阻塞主流程
+    api.resolveLocation().catch(() => {});
+
     const existingUserId = sessionStore.getUserId();
     api.authAnonymous(existingUserId || undefined)
       .then((res) => {
@@ -112,7 +115,7 @@ export function Home() {
         setAddressName(manual);
       }
       shouldNavigate = true;
-    } catch {
+    } catch (err) {
       if (ENABLE_MOCK_FALLBACK) {
         const fallbackSessionId = `mock_session_fallback_${Date.now()}`;
         sessionStore.setSessionId(fallbackSessionId);
@@ -121,7 +124,11 @@ export function Home() {
         setSubmitError('服务暂不可用，已切到本地候选模式。');
         shouldNavigate = true;
       } else {
-        setSubmitError('服务暂不可用，请稍后重试。');
+        if (err instanceof ApiError && err.status === 408) {
+          setSubmitError('服务正在唤醒（首次可能需要20-50秒），请稍后重试。');
+        } else {
+          setSubmitError('服务暂不可用，请稍后重试。');
+        }
       }
     } finally {
       setLoading(false);

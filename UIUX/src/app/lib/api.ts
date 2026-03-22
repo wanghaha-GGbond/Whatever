@@ -1,4 +1,4 @@
-import { API_BASE_URL, DASHBOARD_ADMIN_TOKEN } from './env';
+import { API_BASE_URL, DASHBOARD_ADMIN_TOKEN, IS_PROD_ENV } from './env';
 
 export interface InitResponse {
   code: string;
@@ -81,7 +81,7 @@ export interface FeedbackSubmitPayload {
   transportUsed?: string;
 }
 
-const REQUEST_TIMEOUT_MS = 12000;
+const REQUEST_TIMEOUT_MS = IS_PROD_ENV ? 65000 : 12000;
 
 export class ApiError extends Error {
   status: number;
