@@ -1,14 +1,20 @@
 import asyncio
+import base64
+import hashlib
+import hmac
 import json as _json
 import logging
+import math
+import os
 import random
+import time
 from datetime import datetime
 from pathlib import Path
 from random import choices
 from uuid import uuid4
 
-from fastapi import APIRouter, Request
-from pydantic import BaseModel
+from fastapi import APIRouter, HTTPException, Request, Response
+from pydantic import BaseModel, Field
 
 from .services.intent_parser import (
     parse_intent, eta_min, budget_text, make_judgement, make_risk_label, transport_label,
@@ -26,6 +32,9 @@ from .db import (
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
+
+ANON_COOKIE_NAME = "p003_anon_token"
+ANON_TOKEN_TTL_SECONDS = 60 * 60 * 24 * 180
 
 
 def _load_ranking_cfg() -> dict:
@@ -141,8 +150,102 @@ PERSONA = {
 
 # ─── 工具函数 ───────────────────────────────────────────────────────────────────
 
+def _cookie_secure() -> bool:
+    app_env = (os.getenv("APP_ENV") or "").strip().lower()
+    return app_env in {"production", "prod"}
+
+
+def _cookie_samesite() -> str:
+    # 跨域前端（Vercel）访问后端（Render）时，生产环境需 SameSite=None
+    return "none" if _cookie_secure() else "lax"
+
+
+def _cookie_signing_key() -> str:
+    return (os.getenv("COOKIE_SIGNING_KEY") or "local-dev-cookie-signing-key").strip()
+
+
+def _create_anon_token(user_id: str, expires_at: int) -> str:
+    payload = f"{user_id}:{expires_at}"
+    sig = hmac.new(
+        _cookie_signing_key().encode("utf-8"),
+        payload.encode("utf-8"),
+        hashlib.sha256,
+    ).hexdigest()
+    raw = f"{payload}:{sig}"
+    return base64.urlsafe_b64encode(raw.encode("utf-8")).decode("utf-8").rstrip("=")
+
+
+def _parse_anon_token(token: str | None) -> str | None:
+    if not token:
+        return None
+    try:
+        padded = token + "=" * (-len(token) % 4)
+        raw = base64.urlsafe_b64decode(padded.encode("utf-8")).decode("utf-8")
+        user_id, exp_raw, sig = raw.split(":", 2)
+        payload = f"{user_id}:{exp_raw}"
+        expect_sig = hmac.new(
+            _cookie_signing_key().encode("utf-8"),
+            payload.encode("utf-8"),
+            hashlib.sha256,
+        ).hexdigest()
+        if not hmac.compare_digest(sig, expect_sig):
+            return None
+        if int(exp_raw) <= int(time.time()):
+            return None
+        return user_id
+    except Exception:
+        return None
+
+
+def _resolve_user_id(request: Request, explicit_user_id: str | None = None) -> str | None:
+    if explicit_user_id:
+        raw = explicit_user_id.strip()
+        if raw:
+            return raw
+    return _parse_anon_token(request.cookies.get(ANON_COOKIE_NAME))
+
+
+def _assert_admin_token(request: Request) -> None:
+    expected = (os.getenv("ADMIN_TOKEN") or "").strip()
+    # 本地未配置 ADMIN_TOKEN 时放行，线上建议必须配置
+    if not expected:
+        return
+    provided = (
+        request.headers.get("x-admin-token")
+        or request.headers.get("X-Admin-Token")
+        or request.query_params.get("admin_token")
+        or ""
+    ).strip()
+    if provided != expected:
+        raise HTTPException(status_code=401, detail="admin token invalid")
+
+
 def debug_scenario(request: Request) -> str:
     return request.headers.get("X-Debug-Scenario", "").strip()
+
+
+def _poi_blob(poi: dict) -> str:
+    return " ".join(
+        [
+            str(poi.get("name", "")),
+            str(poi.get("type", "")),
+            str(poi.get("address", "")),
+        ]
+    ).lower()
+
+
+def _poi_matches_keywords(poi: dict, keywords: list[str]) -> bool:
+    if not keywords:
+        return True
+    blob = _poi_blob(poi)
+    return any(k.lower() in blob for k in keywords if k)
+
+
+def _poi_blocked(poi: dict, exclude_keywords: list[str]) -> bool:
+    if not exclude_keywords:
+        return False
+    blob = _poi_blob(poi)
+    return any(k.lower() in blob for k in exclude_keywords if k)
 
 
 def _score_poi(poi: dict, intent: dict, type_weights: dict | None = None) -> float:
@@ -163,6 +266,14 @@ def _score_poi(poi: dict, intent: dict, type_weights: dict | None = None) -> flo
         score += float(poi.get("rating") or 0) / 10.0 * w["rating"]
     except (ValueError, TypeError):
         pass
+
+    must_keywords = intent.get("must_keywords") or []
+    if must_keywords:
+        # 显式关键词（奶茶/麦当劳等）命中时加分，不命中时降权，减少跑偏候选
+        if _poi_matches_keywords(poi, must_keywords):
+            score += 0.22
+        else:
+            score -= 0.18
 
     if type_weights:
         type_label = get_type_label(poi["type"])
@@ -185,10 +296,14 @@ def _select_candidates(pois: list[dict], intent: dict, limit: int = 5) -> list[d
     transport = intent.get("transport", "bike")
     transport_mode = transport_label(transport)
     budget_max = intent.get("budget_max")
+    must_keywords = intent.get("must_keywords") or []
+    exclude_keywords = intent.get("exclude_keywords") or []
 
-    # Step 1：评分 + 硬过滤
+    # Step 1：评分 + 硬过滤 + 干扰词剔除
     scored = []
     for poi in pois:
+        if _poi_blocked(poi, exclude_keywords):
+            continue
         type_weights = intent.get("type_weights")
         s = _score_poi(poi, intent, type_weights)
         if s > 0:  # 0 = 被硬排除
@@ -228,6 +343,16 @@ def _select_candidates(pois: list[dict], intent: dict, limit: int = 5) -> list[d
         if len(selected) >= k:
             break
 
+    # 若随机去重后数量不足，按分数从高到低补齐，尽量满足 limit
+    if len(selected) < k:
+        for s, poi in pool:
+            if poi["id"] in seen_ids:
+                continue
+            seen_ids.add(poi["id"])
+            selected.append((s, poi))
+            if len(selected) >= k:
+                break
+
     # Step 5：转换为 candidate 格式
     result = []
     for i, (s, poi) in enumerate(selected):
@@ -247,6 +372,22 @@ def _select_candidates(pois: list[dict], intent: dict, limit: int = 5) -> list[d
             "nav_url":      nav_url(poi["name"], poi["location"]),
         })
     return result
+
+
+def _pick_with_temperature(candidates: list[dict], temperature: float) -> dict:
+    """
+    temperature 越高随机性越强；越低越偏向高分项。
+    """
+    safe_temp = max(0.25, min(2.5, temperature))
+    power = 1.0 / safe_temp
+    weights = []
+    for c in candidates:
+        s = float(c.get("score", 0.1))
+        s = max(0.01, s)
+        # 在 log 空间收敛，避免权重差异过大导致随机性不足
+        adjusted = math.exp(math.log(s) * power)
+        weights.append(max(0.001, adjusted))
+    return choices(candidates, weights=weights, k=1)[0]
 
 
 async def _enrich_ai_judgements(candidates: list[dict], user_prompt: str) -> None:
@@ -278,6 +419,40 @@ async def _enrich_ai_judgements(candidates: list[dict], user_prompt: str) -> Non
 
 
 # ─── 路由 ───────────────────────────────────────────────────────────────────────
+
+class AnonymousAuthReq(BaseModel):
+    user_id: str | None = None
+
+
+@router.post("/auth/anonymous")
+async def auth_anonymous(request: Request, response: Response, req: AnonymousAuthReq | None = None):
+    # 优先复用已存在 cookie，避免同一用户每次刷新都换身份
+    existing_user_id = _resolve_user_id(request)
+    if existing_user_id:
+        return {"code": "OK", "data": {"user_id": existing_user_id, "is_new": False}}
+
+    requested_user_id = (req.user_id or "").strip() if req else ""
+    user_id = requested_user_id or f"anon_{uuid4().hex[:12]}"
+    expires_at = int(time.time()) + ANON_TOKEN_TTL_SECONDS
+    token = _create_anon_token(user_id, expires_at)
+    response.set_cookie(
+        key=ANON_COOKIE_NAME,
+        value=token,
+        max_age=ANON_TOKEN_TTL_SECONDS,
+        httponly=True,
+        secure=_cookie_secure(),
+        samesite=_cookie_samesite(),
+        path="/",
+    )
+    return {
+        "code": "OK",
+        "data": {
+            "user_id": user_id,
+            "is_new": True,
+            "expires_at": datetime.fromtimestamp(expires_at).isoformat(),
+        },
+    }
+
 
 class InitReq(BaseModel):
     user_id: str | None = None
@@ -343,10 +518,11 @@ async def recommend_init(req: InitReq, request: Request):
 
     session_id = f"rec_s_{uuid4().hex[:10]}"
     intent = parse_intent(req.prompt)
+    resolved_user_id = _resolve_user_id(request, req.user_id)
 
     # 把用户历史偏好混入 intent
-    if req.user_id:
-        user_prefs_data = prefs_get(req.user_id)
+    if resolved_user_id:
+        user_prefs_data = prefs_get(resolved_user_id)
         if user_prefs_data:
             if intent["budget_max"] is None and user_prefs_data.get("budget_avg"):
                 intent["budget_max"] = user_prefs_data["budget_avg"]
@@ -377,13 +553,14 @@ async def recommend_init(req: InitReq, request: Request):
         "intent":       intent,
         "location":     location,
         "address_name": address_name,
-        "user_id":      req.user_id,
+        "user_id":      resolved_user_id,
         "created_at":   datetime.now().isoformat(),
     })
     return {
         "code": "OK",
         "data": {
             "session_id":        session_id,
+            "user_id":           resolved_user_id,
             "address_name":      address_name,   # 前端 LocationBar 用
             "normalized_intent": intent,
             "fallback_used":     False,
@@ -453,7 +630,11 @@ async def recommend_candidates(req: CandidateReq, request: Request):
         "code": "OK",
         "data": {
             "session_id":    req.session_id,
-            "summary":       f"已排除超预算、过远、当前不适合的地点，保留 {len(candidates)} 个候选",
+            "summary": (
+                f"已优先匹配“{' / '.join((intent.get('must_keywords') or [])[:2])}”等关键词，保留 {len(candidates)} 个候选"
+                if intent.get("must_keywords")
+                else f"已排除超预算、过远、当前不适合的地点，保留 {len(candidates)} 个候选"
+            ),
             "candidates":    candidates,
             "fallback_used": fallback_used,
         },
@@ -463,7 +644,7 @@ async def recommend_candidates(req: CandidateReq, request: Request):
 class PickReq(BaseModel):
     session_id: str
     strategy: str = "weighted_random"
-    temperature: float = 0.7
+    temperature: float = 1.2
 
 
 @router.post("/recommend/pick")
@@ -480,8 +661,7 @@ async def recommend_pick(req: PickReq, request: Request):
                 "data": {"fallback_used": True}}
 
     candidates = session.get("candidates") or MOCK_CANDIDATES
-    weights = [c["score"] for c in candidates]
-    picked = choices(candidates, weights=weights, k=1)[0]
+    picked = _pick_with_temperature(candidates, req.temperature)
     picked_transport_mode = picked.get("transport_mode") or transport_label(
         (session.get("intent") or {}).get("transport", "bike")
     )
@@ -586,6 +766,10 @@ class FeedbackReq(BaseModel):
     satisfaction: int = 3
     actual_cost: int | None = None
     persona: str | None = None
+    title: str | None = None
+    content: str | None = None
+    tags: list[str] = Field(default_factory=list)
+    transport_used: str | None = None
 
 
 @router.post("/feedback/submit")
@@ -597,36 +781,53 @@ async def feedback_submit(req: FeedbackReq, request: Request):
 
     feedback_id = f"fb_{uuid4().hex[:10]}"
     pick_data = pick_get(req.pick_id)
+    profile_updated = False
     if pick_data:
         picked = pick_data["picked"]
         session = session_get(req.session_id) or {}
+        resolved_user_id = _resolve_user_id(request, req.user_id or session.get("user_id"))
+        clean_tags = [t.strip() for t in (req.tags or []) if str(t).strip()][:8]
+        clean_title = (req.title or "").strip()[:80]
+        clean_content = (req.content or "").strip()[:2000]
+        satisfaction = max(1, min(5, req.satisfaction))
         history_insert(
             pick_id=req.pick_id,
             name=picked["name"],
             timestamp=datetime.now().isoformat(),
             conditions=session.get("prompt", ""),
-            satisfaction=req.satisfaction,
+            satisfaction=satisfaction,
+            user_id=resolved_user_id,
+            went=req.went,
+            title=clean_title,
+            content=clean_content,
+            tags=clean_tags,
+            actual_cost=req.actual_cost,
+            transport_used=req.transport_used,
         )
-        if req.user_id:
+        if resolved_user_id:
             intent = session.get("intent", {})
             prefs_update(
-                req.user_id,
+                resolved_user_id,
                 transport=intent.get("transport"),
                 budget=req.actual_cost or intent.get("budget_max"),
                 poi_type=picked.get("type"),
-                satisfaction=req.satisfaction,
+                satisfaction=satisfaction,
                 persona=req.persona,
             )
-    return {"code": "OK", "data": {"feedback_id": feedback_id, "profile_updated": True}}
+            profile_updated = True
+    return {"code": "OK", "data": {"feedback_id": feedback_id, "profile_updated": profile_updated}}
 
 
 @router.get("/history/list")
-async def history_list(request: Request, page: int = 1, page_size: int = 20):
+async def history_list(request: Request, page: int = 1, page_size: int = 20, user_id: str | None = None):
     scenario = debug_scenario(request)
     if scenario == "history_empty":
         return {"code": "OK", "data": {"list": [], "page": page,
                                         "page_size": page_size, "total": 0}}
-    items, total = db_history_list(page, page_size)
+    resolved_user_id = _resolve_user_id(request, user_id)
+    if not resolved_user_id:
+        return {"code": "OK", "data": {"list": [], "page": page, "page_size": page_size, "total": 0}}
+    items, total = db_history_list(page, page_size, user_id=resolved_user_id)
     return {
         "code": "OK",
         "data": {
@@ -652,5 +853,6 @@ async def events_track(req: TrackReq):
 
 
 @router.get("/dashboard/metrics")
-async def dashboard(days: int = 7):
+async def dashboard(request: Request, days: int = 7):
+    _assert_admin_token(request)
     return {"code": "OK", "data": dashboard_metrics(days)}

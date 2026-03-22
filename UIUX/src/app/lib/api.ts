@@ -1,9 +1,21 @@
+import { API_BASE_URL, DASHBOARD_ADMIN_TOKEN } from './env';
+
 export interface InitResponse {
   code: string;
   data: {
     session_id: string;
+    user_id?: string;
     address_name: string;   // 逆地理编码后的地名，供 LocationBar 展示
     fallback_used: boolean;
+  };
+}
+
+export interface AuthAnonymousResponse {
+  code: string;
+  data: {
+    user_id: string;
+    is_new: boolean;
+    expires_at?: string;
   };
 }
 
@@ -29,18 +41,96 @@ export interface Candidate {
   risk_label?: string;
 }
 
-const API_PREFIX = import.meta.env.VITE_API_BASE_URL || '/api/v1';
+export interface DashboardMetrics {
+  period_days: number;
+  sessions: number;
+  picks: number;
+  completion_rate: number | null;
+  nav_rate: number | null;
+  redraw_rate: number | null;
+  persona_rate: number | null;
+  feedback_rate: number | null;
+  total_history: number;
+}
+
+export interface HistoryItem {
+  pick_id: string;
+  name: string;
+  timestamp: string;
+  conditions: string;
+  satisfaction: number;
+  went?: boolean;
+  title?: string;
+  content?: string;
+  tags?: string[];
+  actual_cost?: number | null;
+  transport_used?: string | null;
+}
+
+export interface FeedbackSubmitPayload {
+  sessionId: string;
+  pickId: string;
+  userId?: string;
+  persona?: string;
+  went: boolean;
+  satisfaction: number;
+  actualCost?: number;
+  title?: string;
+  content?: string;
+  tags?: string[];
+  transportUsed?: string;
+}
+
+const REQUEST_TIMEOUT_MS = 12000;
+
+export class ApiError extends Error {
+  status: number;
+  constructor(message: string, status: number) {
+    super(message);
+    this.name = 'ApiError';
+    this.status = status;
+  }
+}
 
 async function request<T>(url: string, init?: RequestInit): Promise<T> {
-  const res = await fetch(`${API_PREFIX}${url}`, {
-    headers: { 'Content-Type': 'application/json' },
-    ...init,
-  });
-  if (!res.ok) throw new Error(`HTTP_${res.status}`);
-  return res.json();
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), REQUEST_TIMEOUT_MS);
+  const requestId = `web_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
+  const headers = new Headers(init?.headers);
+  if (!headers.has('Content-Type')) {
+    headers.set('Content-Type', 'application/json');
+  }
+  headers.set('X-Request-Id', requestId);
+
+  try {
+    const res = await fetch(`${API_BASE_URL}${url}`, {
+      ...init,
+      headers,
+      credentials: 'include',
+      signal: ctrl.signal,
+    });
+    if (!res.ok) {
+      throw new ApiError(`HTTP_${res.status}`, res.status);
+    }
+    return res.json();
+  } catch (err) {
+    if (err instanceof DOMException && err.name === 'AbortError') {
+      throw new ApiError('HTTP_TIMEOUT', 408);
+    }
+    throw err;
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
 export const api = {
+  authAnonymous(userId?: string) {
+    return request<AuthAnonymousResponse>('/auth/anonymous', {
+      method: 'POST',
+      body: JSON.stringify({ user_id: userId }),
+    });
+  },
+
   resolveLocation(location?: string) {
     return request<ResolveLocationResponse>('/location/resolve', {
       method: 'POST',
@@ -70,7 +160,7 @@ export const api = {
       '/recommend/pick',
       {
         method: 'POST',
-        body: JSON.stringify({ session_id: sessionId, strategy: 'weighted_random', temperature: 0.7 }),
+        body: JSON.stringify({ session_id: sessionId, strategy: 'weighted_random', temperature: 1.2 }),
       },
     );
   },
@@ -85,24 +175,35 @@ export const api = {
     );
   },
 
-  submitFeedback(sessionId: string, pickId: string, userId?: string, persona?: string, satisfaction?: number, actualCost?: number) {
+  submitFeedback(payload: FeedbackSubmitPayload) {
     return request<{ code: string; data: { feedback_id: string } }>('/feedback/submit', {
       method: 'POST',
       body: JSON.stringify({
-        session_id: sessionId,
-        pick_id: pickId,
-        went: true,
-        satisfaction: satisfaction ?? 4,
-        user_id: userId,
-        persona,
-        actual_cost: actualCost,
+        session_id: payload.sessionId,
+        pick_id: payload.pickId,
+        user_id: payload.userId,
+        persona: payload.persona,
+        went: payload.went,
+        satisfaction: payload.satisfaction,
+        actual_cost: payload.actualCost,
+        title: payload.title,
+        content: payload.content,
+        tags: payload.tags || [],
+        transport_used: payload.transportUsed,
       }),
     });
   },
 
-  getHistory() {
-    return request<{ code: string; data: { list: Array<{ pick_id: string; name: string; timestamp: string; conditions: string; satisfaction: number }> } }>(
-      '/history/list?page=1&page_size=20',
+  getHistory(userId?: string) {
+    const qs = userId ? `?page=1&page_size=20&user_id=${encodeURIComponent(userId)}` : '?page=1&page_size=20';
+    return request<{ code: string; data: { list: HistoryItem[] } }>(
+      `/history/list${qs}`,
     );
+  },
+
+  getDashboardMetrics(days = 7) {
+    return request<{ code: string; data: DashboardMetrics }>(`/dashboard/metrics?days=${days}`, {
+      headers: DASHBOARD_ADMIN_TOKEN ? { 'X-Admin-Token': DASHBOARD_ADMIN_TOKEN } : undefined,
+    });
   },
 };

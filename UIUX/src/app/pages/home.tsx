@@ -7,6 +7,7 @@ import { Mic, Loader2, RotateCw, MapPin } from 'lucide-react';
 import { api } from '../lib/api';
 import { sessionStore } from '../lib/session';
 import { track } from '../lib/analytics';
+import { ENABLE_MOCK_FALLBACK } from '../lib/env';
 
 // 获取用户位置，返回 "lng,lat" 字符串，超时或拒绝返回 undefined
 function getLocation(): Promise<string | undefined> {
@@ -39,6 +40,17 @@ export function Home() {
 
   // 页面加载后静默获取位置（不阻塞提交）
   useEffect(() => {
+    const existingUserId = sessionStore.getUserId();
+    api.authAnonymous(existingUserId || undefined)
+      .then((res) => {
+        if (res.data.user_id) {
+          sessionStore.setUserId(res.data.user_id);
+        }
+      })
+      .catch(() => {
+        // 匿名身份初始化失败不阻塞主流程
+      });
+
     getLocation().then(async (loc) => {
       locationRef.current = loc;
       setLocStatus(loc ? 'ok' : 'denied');
@@ -80,11 +92,16 @@ export function Home() {
   const handleSubmit = async () => {
     setLoading(true);
     setSubmitError('');
+    let shouldNavigate = false;
     try {
       const finalPrompt = buildFinalPrompt();
       const manual = manualLocation.trim();
       const loc = manual || locationRef.current || undefined;
-      const res = await api.initRecommendation(finalPrompt, loc, sessionStore.getDeviceId());
+      const userId = sessionStore.getUserId() || sessionStore.getDeviceId();
+      const res = await api.initRecommendation(finalPrompt, loc, userId);
+      if (res.data.user_id) {
+        sessionStore.setUserId(res.data.user_id);
+      }
       sessionStore.setSessionId(res.data.session_id);
       sessionStore.setPickId('');
       sessionStore.setPicked({});
@@ -94,15 +111,21 @@ export function Home() {
       } else if (manual) {
         setAddressName(manual);
       }
+      shouldNavigate = true;
     } catch {
-      const fallbackSessionId = `mock_session_fallback_${Date.now()}`;
-      sessionStore.setSessionId(fallbackSessionId);
-      sessionStore.setPickId('');
-      sessionStore.setPicked({});
-      setSubmitError('服务暂不可用，已切到本地候选模式。');
+      if (ENABLE_MOCK_FALLBACK) {
+        const fallbackSessionId = `mock_session_fallback_${Date.now()}`;
+        sessionStore.setSessionId(fallbackSessionId);
+        sessionStore.setPickId('');
+        sessionStore.setPicked({});
+        setSubmitError('服务暂不可用，已切到本地候选模式。');
+        shouldNavigate = true;
+      } else {
+        setSubmitError('服务暂不可用，请稍后重试。');
+      }
     } finally {
       setLoading(false);
-      navigate('/candidates');
+      if (shouldNavigate) navigate('/candidates');
     }
   };
 

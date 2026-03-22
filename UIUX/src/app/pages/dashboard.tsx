@@ -1,16 +1,5 @@
 import { useEffect, useState } from 'react';
-
-interface Metrics {
-  period_days: number;
-  sessions: number;
-  picks: number;
-  completion_rate: number | null;
-  nav_rate: number | null;
-  redraw_rate: number | null;
-  persona_rate: number | null;
-  feedback_rate: number | null;
-  total_history: number;
-}
+import { api, DashboardMetrics } from '../lib/api';
 
 function pct(v: number | null) {
   if (v === null) return '—';
@@ -18,14 +7,14 @@ function pct(v: number | null) {
 }
 
 export function Dashboard() {
-  const [metrics, setMetrics] = useState<Metrics | null>(null);
+  const [metrics, setMetrics] = useState<DashboardMetrics | null>(null);
   const [loading, setLoading] = useState(true);
+  const [error, setError] = useState('');
 
   useEffect(() => {
-    fetch('/api/v1/dashboard/metrics?days=7')
-      .then(r => r.json())
-      .then(d => setMetrics(d.data))
-      .catch(() => {})
+    api.getDashboardMetrics(7)
+      .then((r) => setMetrics(r.data))
+      .catch(() => setError('看板加载失败，请稍后重试。'))
       .finally(() => setLoading(false));
   }, []);
 
@@ -55,7 +44,13 @@ export function Dashboard() {
           </div>
         )}
 
-        {!loading && (
+        {!loading && error && (
+          <div className="rounded-2xl border border-amber-300 bg-amber-50 px-4 py-3 text-sm text-amber-800">
+            {error}
+          </div>
+        )}
+
+        {!loading && !error && (
           <div className="space-y-3">
             {rows.map(row => (
               <div key={row.label} className="bg-white rounded-2xl p-5 border border-border flex items-center justify-between">

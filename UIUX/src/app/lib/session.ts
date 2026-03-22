@@ -1,4 +1,10 @@
 export const sessionStore = {
+  setUserId(userId: string) {
+    localStorage.setItem('p003_user_id', userId);
+  },
+  getUserId() {
+    return localStorage.getItem('p003_user_id') || '';
+  },
   setSessionId(sessionId: string) {
     localStorage.setItem('p003_session_id', sessionId);
   },

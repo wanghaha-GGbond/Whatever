@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef } from 'react';
-import { Navigation, RotateCw, Bookmark, Sparkles } from 'lucide-react';
+import { Navigation, RotateCw, MessageSquarePlus, Sparkles } from 'lucide-react';
 import { PersonaTabs } from '../components/persona-tabs';
 import { PersonaReviewCard } from '../components/persona-review-card';
 import { PrimaryButton } from '../components/primary-button';
@@ -9,6 +9,7 @@ import { sessionStore } from '../lib/session';
 import { useNavigate } from 'react-router';
 import { mockPlaces, personaReviews } from '../lib/mock-data';
 import { track } from '../lib/analytics';
+import { ENABLE_MOCK_FALLBACK } from '../lib/env';
 
 interface DrawCard {
   candidate_id: string;
@@ -33,6 +34,19 @@ interface ReviewData {
   review: string;
   risk: string;
   conclusion: string;
+}
+
+function isValidPicked(value: unknown): value is PickedPlace {
+  if (!value || typeof value !== 'object') return false;
+  const v = value as Partial<PickedPlace>;
+  return (
+    typeof v.name === 'string' &&
+    v.name.length > 0 &&
+    typeof v.type === 'string' &&
+    v.type.length > 0 &&
+    typeof v.eta_min === 'number' &&
+    typeof v.budget_text === 'string'
+  );
 }
 
 const MOCK_DISTANCES: Record<string, number> = {
@@ -74,7 +88,27 @@ function fallbackDrawCards(): DrawCard[] {
   });
 }
 
-function normalizeDrawCards(cards: DrawCard[]): DrawCard[] {
+function placeholderDrawCards(): DrawCard[] {
+  return Array.from({ length: 10 }, (_, i) => ({
+    candidate_id: `placeholder_${i}`,
+    name: `候选地点 ${i + 1}`,
+    type: '待揭晓',
+  }));
+}
+
+function cardsFromPicked(picked: PickedPlace): DrawCard[] {
+  return Array.from({ length: 10 }, (_, i) => ({
+    candidate_id: `${picked.candidate_id || 'picked'}_${i}`,
+    name: picked.name,
+    type: picked.type,
+  }));
+}
+
+function normalizeDrawCards(
+  cards: DrawCard[],
+  opts?: { allowMockFallback?: boolean; picked?: PickedPlace },
+): DrawCard[] {
+  const allowMockFallback = opts?.allowMockFallback ?? true;
   const cleaned = cards
     .filter((c) => c && c.name && c.type)
     .slice(0, 10)
@@ -86,6 +120,12 @@ function normalizeDrawCards(cards: DrawCard[]): DrawCard[] {
 
   if (cleaned.length >= 10) return cleaned;
 
+  if (!allowMockFallback) {
+    if (opts?.picked) return cardsFromPicked(opts.picked);
+    if (cleaned.length > 0) return cleaned;
+    return placeholderDrawCards();
+  }
+
   const fillers = fallbackDrawCards();
   while (cleaned.length < 10) {
     const f = fillers[cleaned.length % fillers.length];
@@ -96,6 +136,61 @@ function normalizeDrawCards(cards: DrawCard[]): DrawCard[] {
     });
   }
   return cleaned;
+}
+
+function ThinkingBridge() {
+  const steps = [
+    'AI 正在根据你的偏好选地址',
+    '正在评估候选地点匹配度',
+    '正在生成 AI 入选理由',
+  ];
+  const [step, setStep] = useState(0);
+
+  useEffect(() => {
+    const t = setInterval(() => {
+      setStep((s) => (s + 1) % steps.length);
+    }, 900);
+    return () => clearInterval(t);
+  }, []);
+
+  return (
+    <div className="min-h-screen bg-[radial-gradient(circle_at_15%_10%,#dcfce7_0%,#f0fdf4_35%,#ecfeff_100%)] flex items-center justify-center px-5">
+      <div className="w-full max-w-md rounded-3xl border border-white/70 bg-white/70 backdrop-blur-2xl p-6 shadow-[0_20px_60px_rgba(15,23,42,0.12)] space-y-5">
+        <div className="flex items-center gap-3">
+          <motion.div
+            className="h-10 w-10 rounded-2xl bg-gradient-to-br from-emerald-300 to-cyan-300"
+            animate={{ rotate: [0, 12, -8, 0], scale: [1, 1.04, 1] }}
+            transition={{ duration: 1.6, repeat: Infinity, ease: 'easeInOut' }}
+          />
+          <div>
+            <div className="text-sm font-semibold text-slate-900">AI 正在为你翻牌</div>
+            <div className="text-xs text-slate-500">这一步会花几秒生成理由</div>
+          </div>
+        </div>
+
+        <AnimatePresence mode="wait">
+          <motion.p
+            key={step}
+            initial={{ opacity: 0, y: 8 }}
+            animate={{ opacity: 1, y: 0 }}
+            exit={{ opacity: 0, y: -8 }}
+            transition={{ duration: 0.2, ease: 'easeOut' }}
+            className="text-sm text-slate-700"
+          >
+            {steps[step]}
+          </motion.p>
+        </AnimatePresence>
+
+        <div className="h-2 rounded-full bg-slate-100 overflow-hidden">
+          <motion.div
+            className="h-full bg-gradient-to-r from-emerald-400 via-cyan-400 to-blue-400"
+            animate={{ x: ['-100%', '100%'] }}
+            transition={{ duration: 1.2, repeat: Infinity, ease: 'linear' }}
+          />
+        </div>
+      </div>
+    </div>
+  );
 }
 
 function findPickedCardIndex(cards: DrawCard[], picked: PickedPlace): number {
@@ -131,12 +226,11 @@ interface DrawingAnimationProps {
 
 function DrawingAnimation({ cards, settleIndex, onDone }: DrawingAnimationProps) {
   const [activeIdx, setActiveIdx] = useState(0);
-  const [revealed, setRevealed] = useState(false);
-  const [finalized, setFinalized] = useState(false);
-  const [showFinalCard, setShowFinalCard] = useState(false);
-  const tickerRef = useRef<ReturnType<typeof setInterval> | null>(null);
-  const revealRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const finalRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const [phase, setPhase] = useState<'shuffle' | 'eliminate' | 'final_draw' | 'reveal'>('shuffle');
+  const [alive, setAlive] = useState<boolean[]>(() => cards.map(() => true));
+  const shuffleTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const eliminateTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const finalDrawTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const doneRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   useEffect(() => {
@@ -147,96 +241,152 @@ function DrawingAnimation({ cards, settleIndex, onDone }: DrawingAnimationProps)
     }
 
     const target = Math.max(0, Math.min(settleIndex, n - 1));
+    const aliveSet = new Set<number>(Array.from({ length: n }, (_, i) => i));
     let idx = 0;
-    let settleHitCount = 0;
-    let ticks = 0;
+    let shuffleTicks = 0;
 
-    tickerRef.current = setInterval(() => {
-      ticks += 1;
+    setPhase('shuffle');
+    setAlive(Array.from({ length: n }, () => true));
+    setActiveIdx(0);
+
+    const finish = () => {
+      setPhase('reveal');
+      setActiveIdx(target);
+      setAlive(Array.from({ length: n }, (_, i) => i === target));
+      if (navigator.vibrate) navigator.vibrate(90);
+      doneRef.current = setTimeout(onDone, 1450);
+    };
+
+    const startFinalDraw = () => {
+      const finalists = Array.from(aliveSet);
+      if (finalists.length <= 1) {
+        finish();
+        return;
+      }
+      setPhase('final_draw');
+      let t = 0;
+      finalDrawTimerRef.current = setInterval(() => {
+        t += 1;
+        const current = finalists[t % finalists.length];
+        setActiveIdx(current);
+        if (t >= 14) {
+          if (finalDrawTimerRef.current) clearInterval(finalDrawTimerRef.current);
+          setActiveIdx(target);
+          finish();
+        }
+      }, 120);
+    };
+
+    const scheduleElimination = (delayMs: number) => {
+      eliminateTimerRef.current = setTimeout(() => {
+        const removable = Array.from(aliveSet).filter((i) => i !== target);
+        if (removable.length <= 0) {
+          startFinalDraw();
+          return;
+        }
+
+        const removedIdx = removable[Math.floor(Math.random() * removable.length)];
+        aliveSet.delete(removedIdx);
+        setActiveIdx(removedIdx);
+        if (navigator.vibrate) navigator.vibrate(18);
+        setAlive((prev) => prev.map((v, i) => (i === removedIdx ? false : v)));
+
+        if (aliveSet.size <= 3) {
+          startFinalDraw();
+          return;
+        }
+
+        const remaining = aliveSet.size;
+        const nextDelay = remaining <= 3 ? 460 : remaining <= 6 ? 320 : 240;
+        scheduleElimination(nextDelay);
+      }, delayMs);
+    };
+
+    shuffleTimerRef.current = setInterval(() => {
       idx = (idx + 1) % n;
+      shuffleTicks += 1;
       setActiveIdx(idx);
-
-      if (idx === target && ticks > n) {
-        settleHitCount += 1;
+      if (shuffleTicks >= Math.max(20, n * 2)) {
+        if (shuffleTimerRef.current) clearInterval(shuffleTimerRef.current);
+        setPhase('eliminate');
+        scheduleElimination(260);
       }
-
-      if (settleHitCount >= 2) {
-        if (tickerRef.current) clearInterval(tickerRef.current);
-        setFinalized(true);
-        setRevealed(true);
-        if (navigator.vibrate) navigator.vibrate(80);
-        finalRef.current = setTimeout(() => setShowFinalCard(true), 130);
-        doneRef.current = setTimeout(onDone, 1150);
-      }
-    }, 120);
-
-    revealRef.current = setTimeout(() => setRevealed(true), 1600);
+    }, 85);
 
     return () => {
-      if (tickerRef.current) clearInterval(tickerRef.current);
-      if (revealRef.current) clearTimeout(revealRef.current);
-      if (finalRef.current) clearTimeout(finalRef.current);
+      if (shuffleTimerRef.current) clearInterval(shuffleTimerRef.current);
+      if (eliminateTimerRef.current) clearTimeout(eliminateTimerRef.current);
+      if (finalDrawTimerRef.current) clearInterval(finalDrawTimerRef.current);
       if (doneRef.current) clearTimeout(doneRef.current);
     };
   }, [cards, settleIndex, onDone]);
 
+  const aliveCount = alive.filter(Boolean).length || cards.length;
+  const ritualText =
+    phase === 'shuffle'
+      ? '洗牌中'
+      : phase === 'eliminate'
+        ? `命运筛选中 · 剩余 ${aliveCount} 张`
+        : phase === 'final_draw'
+          ? '最终抽取中'
+          : '命运已揭晓';
+
   return (
-    <div className="min-h-screen bg-[radial-gradient(circle_at_50%_15%,#3f3f46_0%,#111827_42%,#020617_100%)] relative overflow-hidden flex items-center justify-center px-4">
-      <div className="absolute inset-0 bg-[radial-gradient(circle_at_50%_70%,rgba(245,158,11,0.25),transparent_55%)]" />
+    <div className="min-h-screen bg-[radial-gradient(circle_at_35%_10%,#dcfce7_0%,#ecfeff_42%,#f0fdf4_100%)] relative overflow-hidden flex items-center justify-center px-4">
+      <div className="absolute inset-0 bg-[radial-gradient(circle_at_50%_76%,rgba(16,185,129,0.2),transparent_60%)]" />
       <div className="relative z-10 w-full max-w-[440px] space-y-6">
         <AnimatePresence mode="wait">
-          {!finalized ? (
-            <motion.p
-              key="drawing"
-              initial={{ opacity: 0, y: 8 }}
-              animate={{ opacity: 1, y: 0 }}
-              exit={{ opacity: 0, y: -8 }}
-              className="text-center text-[11px] tracking-[0.28em] uppercase text-amber-100"
-            >
-              Destiny Deck Shuffling
-            </motion.p>
-          ) : (
-            <motion.p
-              key="done"
-              initial={{ opacity: 0, y: 8 }}
-              animate={{ opacity: 1, y: 0 }}
-              className="text-center text-[11px] tracking-[0.28em] uppercase text-emerald-100"
-            >
-              Card Locked
-            </motion.p>
-          )}
+          <motion.p
+            key={ritualText}
+            initial={{ opacity: 0, y: 6 }}
+            animate={{ opacity: 1, y: 0 }}
+            exit={{ opacity: 0, y: -6 }}
+            transition={{ duration: 0.16 }}
+            className="text-center text-[11px] tracking-[0.24em] uppercase text-emerald-700"
+          >
+            {ritualText}
+          </motion.p>
         </AnimatePresence>
 
         <div className="grid grid-cols-5 gap-2 sm:gap-3">
           {cards.map((card, idx) => {
-            const isActive = idx === activeIdx;
-            const isWinner = finalized && idx === settleIndex;
+            const isAlive = alive[idx] ?? true;
+            const isActive = phase !== 'reveal' && idx === activeIdx;
+            const isRevealWinner = phase === 'reveal' && idx === settleIndex;
+            const isEliminated = !isAlive && !isRevealWinner;
+            const sigil = ['SUN', 'MOON', 'STAR', 'WAVE', 'WIND', 'TREE', 'FIRE', 'MIST', 'NOVA', 'AURA'][idx % 10];
+
             return (
               <motion.div
                 key={card.candidate_id}
                 animate={{
-                  y: isActive ? -6 : 0,
-                  scale: isWinner ? 1.08 : isActive ? 1.03 : 1,
-                  boxShadow: isWinner
-                    ? '0 12px 32px rgba(16,185,129,0.35)'
+                  y: isRevealWinner ? -14 : isActive ? -5 : isEliminated ? 6 : 0,
+                  rotate: isEliminated ? (idx % 2 === 0 ? -7 : 7) : ((idx % 5) - 2) * 1.3,
+                  scale: isRevealWinner ? 1.38 : isActive ? 1.03 : isEliminated ? 0.9 : 1,
+                  opacity: isEliminated ? 0.22 : 1,
+                  boxShadow: isRevealWinner
+                    ? '0 12px 30px rgba(16,185,129,0.32)'
                     : isActive
-                      ? '0 8px 24px rgba(245,158,11,0.24)'
-                      : '0 4px 12px rgba(0,0,0,0.18)',
+                      ? '0 8px 22px rgba(16,185,129,0.24)'
+                      : '0 4px 12px rgba(15,23,42,0.1)',
                 }}
-                transition={{ duration: 0.16, ease: 'easeOut' }}
-                className="aspect-[3/4] rounded-xl border border-white/20 overflow-hidden"
+                transition={{ duration: 0.22, ease: 'easeOut' }}
+                className={`aspect-[3/4] rounded-xl border border-emerald-100/70 overflow-hidden bg-white/75 ${isRevealWinner ? 'z-20' : ''}`}
               >
-                {isWinner ? (
-                  <div className="h-full w-full bg-gradient-to-b from-emerald-200/35 via-emerald-100/20 to-emerald-950/70 p-2 flex flex-col justify-between">
-                    <Sparkles className="w-3.5 h-3.5 text-emerald-100" />
+                {isRevealWinner ? (
+                  <div className="h-full w-full bg-gradient-to-b from-emerald-300/35 via-emerald-100/20 to-emerald-900/70 p-2 flex flex-col justify-between ring-1 ring-emerald-100/70">
+                    <Sparkles className="w-3.5 h-3.5 text-emerald-100/95" />
                     <div>
-                      <div className="text-[9px] text-emerald-50/90 line-clamp-2 leading-tight">{card.name}</div>
-                      <div className="text-[8px] text-emerald-100/75 mt-1">{card.type}</div>
+                      <div className="text-[9px] text-emerald-50/95 tracking-[0.16em]">DESTINY</div>
+                      <div className="text-[8px] text-emerald-100/90 mt-1">RESULT LOCKED</div>
                     </div>
                   </div>
                 ) : (
-                  <div className="h-full w-full bg-gradient-to-b from-amber-200/15 via-white/10 to-slate-900/70 flex items-center justify-center">
-                    <div className="text-[11px] tracking-[0.25em] text-amber-100/80">ARCANA</div>
+                  <div className="h-full w-full bg-gradient-to-b from-white/95 via-emerald-50/85 to-emerald-100/55 flex flex-col items-center justify-center relative">
+                    <div className="absolute inset-x-2 top-2 h-px bg-emerald-200/75" />
+                    <div className="absolute inset-x-2 bottom-2 h-px bg-emerald-200/75" />
+                    <div className="text-[9px] tracking-[0.18em] text-emerald-700/85">{sigil}</div>
+                    <div className="text-[8px] text-emerald-600/70 mt-1">CARD {idx + 1}</div>
                   </div>
                 )}
               </motion.div>
@@ -244,39 +394,63 @@ function DrawingAnimation({ cards, settleIndex, onDone }: DrawingAnimationProps)
           })}
         </div>
 
-        <p className="text-center text-xs text-slate-200/90">
-          {revealed ? '命运卡已锁定，正在同步本次地点…' : '正在从 10 张命运卡中抽取本次去处…'}
+        <p className="text-center text-xs text-slate-600">
+          {phase === 'shuffle'
+            ? '牌组正在重排命运顺序…'
+            : phase === 'eliminate'
+              ? '逐张淘汰中，保留最终候选…'
+              : phase === 'final_draw'
+                ? '最后一抽，命运即将揭晓…'
+                : '结果锁定，正在揭晓…'}
         </p>
       </div>
+    </div>
+  );
+}
 
-      <AnimatePresence>
-        {showFinalCard && cards[settleIndex] && (
-          <motion.div
-            initial={{ opacity: 0 }}
-            animate={{ opacity: 1 }}
-            exit={{ opacity: 0 }}
-            className="absolute inset-0 z-20 flex items-center justify-center bg-black/35 backdrop-blur-[2px] pointer-events-none"
-          >
-            <motion.div
-              initial={{ opacity: 0, scale: 0.78, rotateY: 0, y: 16 }}
-              animate={{ opacity: 1, scale: 1.2, rotateY: 180, y: 0 }}
-              transition={{ duration: 0.42, ease: 'easeOut' }}
-              className="w-[150px] h-[220px] rounded-2xl [transform-style:preserve-3d]"
-            >
-              <div className="absolute inset-0 rounded-2xl [backface-visibility:hidden] border border-amber-100/55 bg-gradient-to-b from-amber-200/30 via-white/15 to-slate-900/75 flex items-center justify-center">
-                <div className="text-sm tracking-[0.26em] text-amber-100/90">ARCANA</div>
-              </div>
-              <div className="absolute inset-0 rounded-2xl [backface-visibility:hidden] [transform:rotateY(180deg)] border border-emerald-100/65 bg-gradient-to-b from-emerald-200/40 via-emerald-100/20 to-emerald-950/75 p-3 flex flex-col justify-between shadow-[0_20px_45px_rgba(16,185,129,0.4)]">
-                <Sparkles className="w-4 h-4 text-emerald-100" />
-                <div>
-                  <div className="text-xs text-emerald-50 line-clamp-3 leading-tight">{cards[settleIndex].name}</div>
-                  <div className="text-[10px] text-emerald-100/85 mt-1">{cards[settleIndex].type}</div>
-                </div>
-              </div>
-            </motion.div>
-          </motion.div>
-        )}
-      </AnimatePresence>
+function ResultRevealTransition() {
+  return (
+    <div className="min-h-screen flex items-center justify-center px-5 overflow-hidden [perspective:1200px] relative">
+      <motion.div
+        className="absolute inset-0 bg-[radial-gradient(circle_at_35%_10%,#dcfce7_0%,#ecfeff_42%,#f0fdf4_100%)]"
+        initial={{ scale: 1, filter: 'blur(0px)' }}
+        animate={{ scale: 1.08, filter: 'blur(7px)' }}
+        transition={{ duration: 0.66, ease: [0.22, 0.7, 0.24, 1] }}
+      />
+      <motion.div
+        className="absolute inset-0 bg-[radial-gradient(circle_at_center,rgba(16,185,129,0.08)_0%,rgba(15,23,42,0.2)_78%)]"
+        initial={{ opacity: 0.15 }}
+        animate={{ opacity: 0.45 }}
+        transition={{ duration: 0.62, ease: 'easeOut' }}
+      />
+
+      <motion.div
+        className="relative w-[148px] h-[214px] [transform-style:preserve-3d] z-10"
+        initial={{ opacity: 1, scale: 1, rotateX: -3, rotateY: 0, y: 0, z: 0 }}
+        animate={{ opacity: 0, scale: 2.65, rotateX: 13, rotateY: -28, y: -34, z: 420 }}
+        transition={{ duration: 0.66, ease: [0.2, 0.7, 0.2, 1] }}
+      >
+        <motion.div
+          initial={{ opacity: 0.75, scale: 1 }}
+          animate={{ opacity: 0, scale: 1.42 }}
+          transition={{ duration: 0.62, ease: 'easeOut' }}
+          className="absolute -inset-8 rounded-[30px] bg-emerald-300/35 blur-2xl"
+        />
+
+        <motion.div
+          initial={{ rotateY: 0 }}
+          animate={{ rotateY: 78 }}
+          transition={{ duration: 0.66, ease: [0.2, 0.7, 0.2, 1] }}
+          className="absolute inset-0 rounded-2xl [transform-style:preserve-3d]"
+        >
+          <div className="absolute inset-0 rounded-2xl border border-emerald-100/80 bg-gradient-to-b from-emerald-300/35 via-emerald-100/20 to-emerald-900/70 shadow-[0_20px_60px_rgba(16,185,129,0.28)] [backface-visibility:hidden] flex items-center justify-center">
+            <div className="text-[11px] tracking-[0.24em] text-emerald-100/95">DESTINY</div>
+          </div>
+          <div className="absolute inset-0 rounded-2xl border border-cyan-100/80 bg-gradient-to-b from-cyan-200/45 via-cyan-100/30 to-cyan-900/70 [transform:rotateY(180deg)] [backface-visibility:hidden] flex items-center justify-center">
+            <div className="text-[11px] tracking-[0.22em] text-cyan-50/95">REVEAL</div>
+          </div>
+        </motion.div>
+      </motion.div>
     </div>
   );
 }
@@ -284,15 +458,17 @@ function DrawingAnimation({ cards, settleIndex, onDone }: DrawingAnimationProps)
 export function Result() {
   const navigate = useNavigate();
   const [isDrawing, setIsDrawing] = useState(true);
+  const [isRevealing, setIsRevealing] = useState(false);
   const [selectedPersona, setSelectedPersona] = useState('独处型');
   const [review, setReview] = useState<ReviewData | null>(null);
   const [reviewLoading, setReviewLoading] = useState(false);
+  const [reviewError, setReviewError] = useState('');
+  const [pageError, setPageError] = useState('');
   const [picked, setPicked] = useState<PickedPlace | null>(null);
   const [pickedLoading, setPickedLoading] = useState(true);
-  const [drawCards, setDrawCards] = useState<DrawCard[]>(() =>
-    normalizeDrawCards(sessionStore.getCandidatePool<DrawCard>()),
-  );
+  const [drawCards, setDrawCards] = useState<DrawCard[]>([]);
   const [settleIndex, setSettleIndex] = useState(0);
+  const revealTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const personas = ['独处型', '探索型', '务实型', '审美型', '老饕', '效率党', '精算师', '氛围感'];
 
@@ -303,27 +479,60 @@ export function Result() {
 
   useEffect(() => {
     const loadPicked = async () => {
+      const startedAt = Date.now();
       const sessionId = sessionStore.getSessionId();
       if (!sessionId) {
         navigate('/');
         return;
       }
+      setPageError('');
 
       const pickId = sessionStore.getPickId();
       const isMockSession = sessionId.startsWith('mock_session_fallback');
       const isMockPick = pickId.startsWith('mock_pick_fallback');
+      const cachedPickedRaw = sessionStore.getPicked<unknown>();
+      const cachedPicked = isValidPicked(cachedPickedRaw) ? cachedPickedRaw : null;
 
       let finalPicked: PickedPlace;
       if (isMockSession || isMockPick) {
-        finalPicked = sessionStore.getPicked<PickedPlace>() ?? randomMockPicked();
+        if (!ENABLE_MOCK_FALLBACK) {
+          setPickedLoading(false);
+          setIsDrawing(false);
+          setPageError('当前环境已禁用本地兜底，请返回首页重新发起推荐。');
+          return;
+        }
+        finalPicked = cachedPicked ?? randomMockPicked();
         sessionStore.setPicked(finalPicked);
         if (!pickId) sessionStore.setPickId(`mock_pick_fallback_${Date.now()}`);
       } else {
-        finalPicked = sessionStore.getPicked<PickedPlace>() ?? randomMockPicked();
-        sessionStore.setPicked(finalPicked);
+        if (cachedPicked && pickId) {
+          finalPicked = cachedPicked;
+          sessionStore.setPicked(finalPicked);
+        } else {
+          try {
+            const res = await api.pick(sessionId);
+            finalPicked = res.data.picked;
+            sessionStore.setPicked(finalPicked);
+            sessionStore.setPickId(res.data.pick_id);
+            track('pick_drawn', { name: res.data.picked.name, type: res.data.picked.type }, sessionId, sessionStore.getDeviceId());
+          } catch {
+            if (!ENABLE_MOCK_FALLBACK) {
+              setPickedLoading(false);
+              setIsDrawing(false);
+              setPageError('未找到有效抽签结果，请返回候选页重新抽签。');
+              return;
+            }
+            finalPicked = randomMockPicked();
+            sessionStore.setPicked(finalPicked);
+            sessionStore.setPickId(`mock_pick_fallback_${Date.now()}`);
+          }
+        }
       }
 
-      const basePool = normalizeDrawCards(sessionStore.getCandidatePool<DrawCard>());
+      const basePool = normalizeDrawCards(sessionStore.getCandidatePool<DrawCard>(), {
+        allowMockFallback: ENABLE_MOCK_FALLBACK,
+        picked: finalPicked,
+      });
       const foundIdx = findPickedCardIndex(basePool, finalPicked);
       const syncedPool = [...basePool];
       if (foundIdx < 0 || !syncedPool.some((c) => c.name === finalPicked.name)) {
@@ -339,10 +548,18 @@ export function Result() {
       sessionStore.setCandidatePool(syncedPool);
       setSettleIndex(nextSettleIdx >= 0 ? nextSettleIdx : 0);
       setPicked(finalPicked);
+      const waitMs = Math.max(0, 720 - (Date.now() - startedAt));
+      if (waitMs > 0) {
+        await new Promise((resolve) => setTimeout(resolve, waitMs));
+      }
       setPickedLoading(false);
+      setIsDrawing(true);
     };
 
     loadPicked();
+    return () => {
+      if (revealTimerRef.current) clearTimeout(revealTimerRef.current);
+    };
   }, [navigate]);
 
   useEffect(() => {
@@ -351,12 +568,18 @@ export function Result() {
       const pickId = sessionStore.getPickId();
       if (!sessionId || !pickId) return;
 
+      setReviewError('');
       setReviewLoading(true);
       try {
         const reviewRes = await api.personaReview(sessionId, pickId, selectedPersona);
         setReview(reviewRes.data);
       } catch {
-        setReview(buildFallbackReview(selectedPersona, picked));
+        if (ENABLE_MOCK_FALLBACK) {
+          setReview(buildFallbackReview(selectedPersona, picked));
+        } else {
+          setReview(null);
+          setReviewError('人格试玩加载失败，请稍后重试。');
+        }
       } finally {
         setReviewLoading(false);
       }
@@ -365,18 +588,11 @@ export function Result() {
     if (!isDrawing) loadReview();
   }, [selectedPersona, isDrawing, picked]);
 
-  const onFeedback = async () => {
+  const onFeedback = () => {
     const sessionId = sessionStore.getSessionId();
-    const pickId = sessionStore.getPickId();
-    if (sessionId && pickId) {
-      try {
-        await api.submitFeedback(sessionId, pickId, sessionStore.getDeviceId(), selectedPersona, 4);
-      } catch {
-        // 静默失败，不影响导航
-      }
-      track('feedback_submitted', { satisfaction: 4, persona: selectedPersona }, sessionId, sessionStore.getDeviceId());
-      navigate('/history');
-    }
+    if (!sessionId) return;
+    track('feedback_entry_clicked', { persona: selectedPersona }, sessionId, sessionStore.getDeviceId());
+    navigate('/feedback');
   };
 
   const handleNavigate = () => {
@@ -387,18 +603,36 @@ export function Result() {
   };
 
   if (isDrawing) {
+    if (pickedLoading) {
+      return <ThinkingBridge />;
+    }
     return (
       <DrawingAnimation
         cards={drawCards}
         settleIndex={settleIndex}
-        onDone={() => setIsDrawing(false)}
+        onDone={() => {
+          setIsDrawing(false);
+          setIsRevealing(true);
+          if (revealTimerRef.current) clearTimeout(revealTimerRef.current);
+          revealTimerRef.current = setTimeout(() => setIsRevealing(false), 520);
+        }}
       />
     );
+  }
+
+  if (isRevealing) {
+    return <ResultRevealTransition />;
   }
 
   return (
     <div className="min-h-screen bg-[radial-gradient(circle_at_top,#fefce8_0%,#ecfdf5_42%,#dcfce7_100%)]">
       <div className="max-w-2xl mx-auto px-5 py-8 space-y-8">
+        {pageError && (
+          <div className="rounded-2xl border border-amber-300 bg-amber-50 px-4 py-3 text-sm text-amber-800">
+            {pageError}
+          </div>
+        )}
+
         <motion.div
           initial={{ opacity: 0, y: 20 }}
           animate={{ opacity: 1, y: 0 }}
@@ -438,7 +672,9 @@ export function Result() {
                 <p className="text-sm leading-relaxed text-[#1d1d1f]">{picked.reason}</p>
               </div>
             </>
-          ) : null}
+          ) : (
+            <div className="text-sm text-amber-700">暂无可展示的抽签结果，请返回候选页重试。</div>
+          )}
         </motion.div>
 
         <motion.div
@@ -459,6 +695,10 @@ export function Result() {
                 <div className="bg-black/8 h-4 rounded-2xl animate-pulse w-3/4" />
                 <div className="bg-black/8 h-4 rounded-2xl animate-pulse w-1/2" />
                 <div className="bg-black/5 h-4 rounded-2xl animate-pulse w-2/3 mt-4" />
+              </div>
+            ) : reviewError ? (
+              <div className="rounded-2xl border border-amber-300 bg-amber-50 px-4 py-3 text-sm text-amber-800">
+                {reviewError}
               </div>
             ) : review ? (
               <AnimatePresence mode="wait">
@@ -503,8 +743,8 @@ export function Result() {
             </PrimaryButton>
             <PrimaryButton variant="outline" onClick={onFeedback}>
               <div className="flex items-center justify-center gap-2">
-                <Bookmark className="w-4 h-4" />
-                提交反馈
+                <MessageSquarePlus className="w-4 h-4" />
+                去后写反馈
               </div>
             </PrimaryButton>
           </div>

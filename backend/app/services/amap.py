@@ -6,6 +6,7 @@
 import os
 import httpx
 from typing import Any
+from urllib.parse import quote_plus
 
 AMAP_BASE = "https://restapi.amap.com/v3"
 _TIMEOUT = 5.0  # seconds
@@ -83,7 +84,7 @@ async def search_around(
     }
     """
     # 手动拼 URL：httpx params= 会把 | 编码成 %7C，高德不认多类型
-    # 注意：高德 keywords 和 types 同时传会互相干扰，优先用 types
+    # keywords 用于品牌/口味偏好（如奶茶、麦当劳）时做更强语义约束
     qs = (
         f"key={_key()}"
         f"&location={location}"
@@ -94,6 +95,8 @@ async def search_around(
         f"&extensions=base"
         f"&sortrule=distance"
     )
+    if keywords.strip():
+        qs += f"&keywords={quote_plus(keywords.strip())}"
 
     data = await _request_json(f"/place/around?{qs}", _TIMEOUT)
 

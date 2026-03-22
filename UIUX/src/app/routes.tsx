@@ -4,6 +4,7 @@ import { Candidates } from "./pages/candidates";
 import { Result } from "./pages/result";
 import { History } from "./pages/history";
 import { Dashboard } from "./pages/dashboard";
+import { Feedback } from "./pages/feedback";
 import { Root } from "./pages/root";
 
 export const router = createBrowserRouter([
@@ -14,6 +15,7 @@ export const router = createBrowserRouter([
       { index: true, Component: Home },
       { path: "candidates", Component: Candidates },
       { path: "result", Component: Result },
+      { path: "feedback", Component: Feedback },
       { path: "history", Component: History },
       { path: "dashboard", Component: Dashboard },
     ],

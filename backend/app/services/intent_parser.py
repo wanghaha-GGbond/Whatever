@@ -9,10 +9,10 @@ import re
 # 高德 POI 类型码
 CATEGORY_MAP = {
     "park":       ("公园|广场|绿地|草地|湖|河边|骑行", "110100|110101|110102|110103"),
-    "cafe":       ("咖啡|coffee|拿铁|下午茶",         "050118"),
+    "cafe":       ("咖啡|coffee|拿铁|下午茶|奶茶|茶饮|果茶", "050118|050000"),
     "bookstore":  ("书店|书|图书馆|阅读",              "060100|080703"),
     "museum":     ("博物馆|展览|美术馆|展馆",           "080300|080301|080302"),
-    "restaurant": ("餐厅|吃饭|饭|烤肉|火锅|面|饺子",   "050000"),
+    "restaurant": ("餐厅|吃饭|饭|烤肉|火锅|面|饺子|麦当劳|mcdonald|肯德基|kfc|汉堡|炸鸡|快餐", "050000"),
     "mall":       ("商场|购物|逛街|超市",               "060200|060201"),
     "outdoor":    ("户外|爬山|自然|风景",               "110100|110200"),
     "gym":        ("健身|运动|游泳|跑步",               "090301|090302"),
@@ -20,6 +20,22 @@ CATEGORY_MAP = {
 
 # 默认兜底：涵盖公园+咖啡+书店+博物馆
 DEFAULT_TYPES = "110100|050118|060100|080300"
+FOOD_FOCUS_TYPES = "050000|050118"
+
+KEYWORD_INTENT_RULES = [
+    {
+        "pattern": r"奶茶|茶饮|果茶|喜茶|奈雪|茶百道|沪上阿姨|霸王茶姬|益禾堂|一点点|coco|ko(i|ï)",
+        "must_keywords": ["奶茶", "茶饮", "饮品", "果茶"],
+        "exclude_keywords": ["棋牌", "棋牌室", "足疗", "洗浴", "网吧"],
+        "poi_types": FOOD_FOCUS_TYPES,
+    },
+    {
+        "pattern": r"麦当劳|mcdonald|麦麦|肯德基|kfc|汉堡王|burger\s*king|快餐|汉堡|炸鸡",
+        "must_keywords": ["麦当劳", "mcdonald", "肯德基", "kfc", "汉堡", "快餐"],
+        "exclude_keywords": ["棋牌", "棋牌室", "足疗", "洗浴", "网吧"],
+        "poi_types": FOOD_FOCUS_TYPES,
+    },
+]
 
 TRANSPORT_SPEED = {
     "walk":   83,   # m/min (约5km/h)
@@ -38,6 +54,21 @@ TRANSPORT_LABEL = {
     "bike": "骑车",
     "subway": "地铁",
 }
+
+
+def _unique_keep_order(items: list[str]) -> list[str]:
+    out: list[str] = []
+    seen: set[str] = set()
+    for item in items:
+        token = item.strip()
+        if not token:
+            continue
+        norm = token.lower()
+        if norm in seen:
+            continue
+        seen.add(norm)
+        out.append(token)
+    return out
 
 
 def parse_intent(prompt: str) -> dict:
@@ -86,19 +117,33 @@ def parse_intent(prompt: str) -> dict:
     # 4. POI 类型（从氛围/场景关键词推断）
     matched_types = []
     matched_keywords = []
+    must_keywords: list[str] = []
+    exclude_keywords: list[str] = []
+    forced_types: list[str] = []
+
+    for rule in KEYWORD_INTENT_RULES:
+        if re.search(rule["pattern"], text):
+            must_keywords.extend(rule["must_keywords"])
+            exclude_keywords.extend(rule["exclude_keywords"])
+            forced_types.append(rule["poi_types"])
+
     for key, (pattern, type_code) in CATEGORY_MAP.items():
         if re.search(pattern, text):
             matched_types.append(type_code)
             matched_keywords.append(key)
 
-    if matched_types:
+    if forced_types:
+        poi_types = "|".join(_unique_keep_order(forced_types))
+    elif matched_types:
         poi_types = "|".join(matched_types)
     else:
         poi_types = DEFAULT_TYPES  # 兜底：公园+咖啡+书店+博物馆
 
     # 5. 补充关键词搜索（用于 Amap keywords 参数）
     keywords = ""
-    if re.search(r"安静|一个人|独处|宁静", text):
+    if must_keywords:
+        keywords = " ".join(_unique_keep_order(must_keywords))
+    elif re.search(r"安静|一个人|独处|宁静", text):
         keywords = "公园 书店 咖啡"
     elif re.search(r"热闹|朋友|聚会|约", text):
         keywords = "商场 餐厅 咖啡"
@@ -112,6 +157,8 @@ def parse_intent(prompt: str) -> dict:
         "transport": transport,
         "budget_max": budget_max,
         "open_now": True,
+        "must_keywords": _unique_keep_order(must_keywords),
+        "exclude_keywords": _unique_keep_order(exclude_keywords),
     }
 
 
