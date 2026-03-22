@@ -31,6 +31,34 @@ def _key() -> str:
     return key
 
 
+async def _request_json(path_qs: str, timeout: float) -> dict:
+    """
+    高德请求容错策略：
+    1) 先走显式 HTTP(S) 代理（如果有）
+    2) 失败后自动尝试直连
+    每种网络路径最多重试 2 次
+    """
+    proxy = _proxy()
+    tried = [proxy] if proxy else []
+    tried.append(None)  # 最后尝试直连
+    last_exc: Exception | None = None
+
+    for current_proxy in tried:
+        for _ in range(2):
+            try:
+                async with httpx.AsyncClient(timeout=timeout, proxy=current_proxy, trust_env=False) as client:
+                    resp = await client.get(f"{AMAP_BASE}{path_qs}")
+                    resp.raise_for_status()
+                    return resp.json()
+            except (httpx.TimeoutException, httpx.TransportError) as exc:
+                last_exc = exc
+                continue
+
+    if last_exc:
+        raise last_exc
+    raise RuntimeError("AMAP 请求失败")
+
+
 async def search_around(
     location: str,        # "lng,lat"，例如 "121.4737,31.2304"
     poi_types: str,       # 高德类型码，"|" 分隔
@@ -67,10 +95,7 @@ async def search_around(
         f"&sortrule=distance"
     )
 
-    async with httpx.AsyncClient(timeout=_TIMEOUT, proxy=_proxy(), trust_env=False) as client:
-        resp = await client.get(f"{AMAP_BASE}/place/around?{qs}")
-        resp.raise_for_status()
-        data = resp.json()
+    data = await _request_json(f"/place/around?{qs}", _TIMEOUT)
 
     if data.get("status") != "1" or not data.get("pois"):
         return []
@@ -115,9 +140,7 @@ async def regeo(location: str) -> str:
     """
     qs = f"key={_key()}&location={location}&poitype=&radius=100&extensions=base&roadlevel=1"
     try:
-        async with httpx.AsyncClient(timeout=2.0, proxy=_proxy(), trust_env=False) as client:
-            resp = await client.get(f"{AMAP_BASE}/geocode/regeo?{qs}")
-            data = resp.json()
+        data = await _request_json(f"/geocode/regeo?{qs}", 3.5)
         if data.get("status") != "1":
             return ""
         addr = data.get("regeocode", {}).get("addressComponent", {})
@@ -134,9 +157,7 @@ async def geocode(address: str) -> str:
     """文字地址 → "lng,lat"，失败返回空字符串。"""
     qs = f"key={_key()}&address={address}&output=JSON"
     try:
-        async with httpx.AsyncClient(timeout=3.0, proxy=_proxy(), trust_env=False) as client:
-            resp = await client.get(f"{AMAP_BASE}/geocode/geo?{qs}")
-            data = resp.json()
+        data = await _request_json(f"/geocode/geo?{qs}", 4.0)
         if data.get("status") != "1" or not data.get("geocodes"):
             return ""
         return data["geocodes"][0].get("location", "")

@@ -1,3 +1,4 @@
+import asyncio
 import json as _json
 import logging
 import random
@@ -248,6 +249,34 @@ def _select_candidates(pois: list[dict], intent: dict, limit: int = 5) -> list[d
     return result
 
 
+async def _enrich_ai_judgements(candidates: list[dict], user_prompt: str) -> None:
+    """
+    用 LLM 生成候选卡片的推荐理由。
+    失败时保持原有模板文案，不抛异常。
+    """
+    if not candidates:
+        return
+
+    tasks = [
+        llm.pick_reason(
+            poi_name=c["name"],
+            poi_type=c["type"],
+            eta_min=c["eta_min"],
+            budget=c["budget_text"],
+            user_prompt=user_prompt,
+        )
+        for c in candidates
+    ]
+    results = await asyncio.gather(*tasks, return_exceptions=True)
+
+    for c, r in zip(candidates, results):
+        if isinstance(r, Exception):
+            continue
+        text = str(r).strip()
+        if text:
+            c["ai_judgement"] = text
+
+
 # ─── 路由 ───────────────────────────────────────────────────────────────────────
 
 class InitReq(BaseModel):
@@ -399,7 +428,7 @@ async def recommend_candidates(req: CandidateReq, request: Request):
             raise ValueError("高德返回空结果")
         candidates = _select_candidates(pois, intent, limit=req.limit)
     except Exception as exc:
-        logger.warning("高德搜索失败，降级 mock: %s", exc)
+        logger.warning("高德搜索失败，降级 mock: %r", exc)
         fallback_transport = intent.get("transport", "bike")
         fallback_transport_mode = transport_label(fallback_transport)
         candidates = [
@@ -411,6 +440,12 @@ async def recommend_candidates(req: CandidateReq, request: Request):
             for c in MOCK_CANDIDATES[:req.limit]
         ]
         fallback_used = True
+
+    # 让候选卡片理由也尽量由 AI 生成；失败则保留模板文案
+    try:
+        await _enrich_ai_judgements(candidates, session.get("prompt", ""))
+    except Exception as exc:
+        logger.warning("候选 ai_judgement 生成失败，使用模板: %s", exc)
 
     session_set_candidates(req.session_id, candidates)
 

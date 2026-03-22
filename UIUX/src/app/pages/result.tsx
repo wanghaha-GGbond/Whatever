@@ -133,8 +133,10 @@ function DrawingAnimation({ cards, settleIndex, onDone }: DrawingAnimationProps)
   const [activeIdx, setActiveIdx] = useState(0);
   const [revealed, setRevealed] = useState(false);
   const [finalized, setFinalized] = useState(false);
+  const [showFinalCard, setShowFinalCard] = useState(false);
   const tickerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const revealRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const finalRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const doneRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   useEffect(() => {
@@ -163,7 +165,8 @@ function DrawingAnimation({ cards, settleIndex, onDone }: DrawingAnimationProps)
         setFinalized(true);
         setRevealed(true);
         if (navigator.vibrate) navigator.vibrate(80);
-        doneRef.current = setTimeout(onDone, 700);
+        finalRef.current = setTimeout(() => setShowFinalCard(true), 130);
+        doneRef.current = setTimeout(onDone, 1150);
       }
     }, 120);
 
@@ -172,6 +175,7 @@ function DrawingAnimation({ cards, settleIndex, onDone }: DrawingAnimationProps)
     return () => {
       if (tickerRef.current) clearInterval(tickerRef.current);
       if (revealRef.current) clearTimeout(revealRef.current);
+      if (finalRef.current) clearTimeout(finalRef.current);
       if (doneRef.current) clearTimeout(doneRef.current);
     };
   }, [cards, settleIndex, onDone]);
@@ -244,6 +248,35 @@ function DrawingAnimation({ cards, settleIndex, onDone }: DrawingAnimationProps)
           {revealed ? '命运卡已锁定，正在同步本次地点…' : '正在从 10 张命运卡中抽取本次去处…'}
         </p>
       </div>
+
+      <AnimatePresence>
+        {showFinalCard && cards[settleIndex] && (
+          <motion.div
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            className="absolute inset-0 z-20 flex items-center justify-center bg-black/35 backdrop-blur-[2px] pointer-events-none"
+          >
+            <motion.div
+              initial={{ opacity: 0, scale: 0.78, rotateY: 0, y: 16 }}
+              animate={{ opacity: 1, scale: 1.2, rotateY: 180, y: 0 }}
+              transition={{ duration: 0.42, ease: 'easeOut' }}
+              className="w-[150px] h-[220px] rounded-2xl [transform-style:preserve-3d]"
+            >
+              <div className="absolute inset-0 rounded-2xl [backface-visibility:hidden] border border-amber-100/55 bg-gradient-to-b from-amber-200/30 via-white/15 to-slate-900/75 flex items-center justify-center">
+                <div className="text-sm tracking-[0.26em] text-amber-100/90">ARCANA</div>
+              </div>
+              <div className="absolute inset-0 rounded-2xl [backface-visibility:hidden] [transform:rotateY(180deg)] border border-emerald-100/65 bg-gradient-to-b from-emerald-200/40 via-emerald-100/20 to-emerald-950/75 p-3 flex flex-col justify-between shadow-[0_20px_45px_rgba(16,185,129,0.4)]">
+                <Sparkles className="w-4 h-4 text-emerald-100" />
+                <div>
+                  <div className="text-xs text-emerald-50 line-clamp-3 leading-tight">{cards[settleIndex].name}</div>
+                  <div className="text-[10px] text-emerald-100/85 mt-1">{cards[settleIndex].type}</div>
+                </div>
+              </div>
+            </motion.div>
+          </motion.div>
+        )}
+      </AnimatePresence>
     </div>
   );
 }
