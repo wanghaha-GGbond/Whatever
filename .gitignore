@@ -1,0 +1,61 @@
+# OS / editor
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Node / frontend
+node_modules/
+**/node_modules/
+.pnpm-store/
+.npm/
+.yarn/
+.cache/
+.parcel-cache/
+.next/
+.nuxt/
+.svelte-kit/
+coverage/
+dist/
+**/dist/
+.vite/
+*.tsbuildinfo
+
+# Python / backend
+__pycache__/
+**/__pycache__/
+*.py[cod]
+*.pyo
+.python-version
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.tox/
+.nox/
+.venv/
+venv/
+env/
+**/.venv/
+pip-wheel-metadata/
+
+# Local env / secrets
+.env
+.env.*
+!.env.example
+
+# Runtime / logs / local db
+*.log
+logs/
+*.sqlite
+*.sqlite3
+*.db
+backend/data/*.db
+
+# Build / archives
+build/
+tmp/
+temp/
+*.zip
+*.tar.gz

@@ -1,0 +1,21 @@
+{
+  "_comment": "POI 评分权重，调整即可改变推荐倾向，无需改代码。",
+  "weights": {
+    "distance": 0.40,
+    "rating":   0.15,
+    "match":    0.20,
+    "novelty":  0.05,
+    "risk":     0.00
+  },
+  "noise": {
+    "range": 0.08
+  },
+  "diversity": {
+    "max_same_type": 2,
+    "pool_multiplier": 3
+  },
+  "radius": {
+    "max_m": 15000,
+    "fallback_expand": 1.5
+  }
+}
