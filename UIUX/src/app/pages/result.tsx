@@ -667,9 +667,9 @@ export function Result() {
                 {picked.distance_m ? ` · ${formatDistance(picked.distance_m)}` : ''}
                 &nbsp;·&nbsp;{picked.budget_text}
               </div>
-              <div className="bg-black/4 rounded-2xl px-4 py-3">
-                <div className="text-xs uppercase tracking-widest text-[#6e6e73] mb-1.5">入选理由</div>
-                <p className="text-sm leading-relaxed text-[#1d1d1f]">{picked.reason}</p>
+              <div className="bg-gradient-to-br from-emerald-50/80 to-cyan-50/60 rounded-2xl px-4 py-3 border border-emerald-100/60">
+                <div className="text-xs tracking-widest text-emerald-700/70 mb-1.5">命运独白</div>
+                <p className="text-sm leading-relaxed text-[#1d1d1f] italic">{picked.reason}</p>
               </div>
             </>
           ) : (

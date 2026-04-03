@@ -5,6 +5,7 @@ DeepSeek LLM 客户端（OpenAI 兼容格式）。
 import json
 import logging
 import os
+import random
 
 import httpx
 
@@ -92,8 +93,18 @@ _BASE_URL = "https://api.deepseek.com/chat/completions"
 _MODEL = "deepseek-chat"
 _TIMEOUT = 8.0  # 与 engineering-bootstrap REQUEST_TIMEOUT_MS=8000 对齐
 
+# 命运叙事角度：每次随机选一个，让每张卡片的理由都有不同切入点
+NARRATIVE_ANGLES = [
+    "从今天的时间节点或季节切入",
+    "从用户说的那句话里，找到一个他没意识到的信号",
+    "用一个反直觉的理由——为什么不是别的地方偏偏是这里",
+    "从感官细节切入（光线、声音、气味、温度中的某一种）",
+    "像命运在平静解释自己的选择",
+    "从这个地点今天最特别的一面说起",
+]
 
-async def _chat(system: str, user: str, max_tokens: int = 200) -> str:
+
+async def _chat(system: str, user: str, max_tokens: int = 200, temperature: float = 0.9) -> str:
     if not _API_KEY:
         raise RuntimeError("DEEPSEEK_API_KEY 未配置")
     async with httpx.AsyncClient(timeout=_TIMEOUT, trust_env=False) as client:
@@ -110,7 +121,7 @@ async def _chat(system: str, user: str, max_tokens: int = 200) -> str:
                     {"role": "user", "content": user},
                 ],
                 "max_tokens": max_tokens,
-                "temperature": 0.8,
+                "temperature": temperature,
             },
         )
         resp.raise_for_status()
@@ -171,19 +182,44 @@ async def pick_reason(
     eta_min: int,
     budget: str,
     user_prompt: str,
+    context: dict | None = None,
 ) -> str:
     """
-    生成候选卡片推荐理由（一句话，不超过20字）。
+    生成候选卡片推荐理由（命运独白，一句话，不超过25字）。
+    context 可包含：weather, temperature, weekday, hour, season, is_wild_card
     """
-    system = (
-        "你是用户一个熟悉城市的朋友，帮他快速拍板今天去哪。"
-        "说一句话（不超过20字），用你对他当前心情的理解解释为什么这个地方适合他——"
-        "不是介绍地方，是说你看穿了他的状态。"
-        "语气直接，像发消息不像写文案。禁止重复用户说过的词。只输出这一句，不加句号。"
-    )
+    angle = random.choice(NARRATIVE_ANGLES)
+    is_wild = bool(context and context.get("is_wild_card"))
+
+    ctx_parts = []
+    if context:
+        if context.get("weather"):
+            temp = context.get("temperature", "")
+            ctx_parts.append(f"{context['weather']}{f' {temp}°' if temp else ''}")
+        if context.get("weekday") and context.get("hour") is not None:
+            ctx_parts.append(f"{context['weekday']}{context['hour']}点")
+        if context.get("season"):
+            ctx_parts.append(f"{context['season']}天")
+    ctx_str = "，".join(ctx_parts)
+
+    if is_wild:
+        system = (
+            "你是「今天的命运」，你刚刚为这个人选了一个他根本没预料到的地方。\n"
+            f"叙事角度：{angle}\n"
+            "用一句话（不超过25字），用一个完全出乎意料但成立的理由，让他忍不住想去看看。\n"
+            "禁止说「适合你」「推荐」「AI」。只输出这一句，不加句号。"
+        )
+    else:
+        system = (
+            "你是「今天的命运」，你刚刚为这个人选好了一个地方。\n"
+            f"叙事角度：{angle}\n"
+            "用一句话（不超过25字），有具体画面感，像命运在平静地说话。\n"
+            "禁止说「适合你」「推荐」「AI」。禁止重复用户说过的词。只输出这一句，不加句号。"
+        )
     user = (
-        f"他说：「{user_prompt}」\n"
-        f"候选地：{poi_name}（{poi_type}）/ {eta_min} 分钟可到 / {budget}\n"
-        "为什么现在适合他去这里？"
+        f"用户说：「{user_prompt}」\n"
+        + (f"此刻：{ctx_str}\n" if ctx_str else "")
+        + f"命运选中了：{poi_name}（{poi_type}）/ {eta_min}分钟可到 / {budget}\n"
+        "命运说："
     )
-    return await _chat(system, user)
+    return await _chat(system, user, max_tokens=80, temperature=1.1)

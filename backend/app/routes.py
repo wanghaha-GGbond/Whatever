@@ -19,7 +19,7 @@ from pydantic import BaseModel, Field
 from .services.intent_parser import (
     parse_intent, eta_min, budget_text, make_judgement, make_risk_label, transport_label, DEFAULT_TYPES,
 )
-from .services.amap import search_around, get_type_label, nav_url, regeo, geocode
+from .services.amap import search_around, get_type_label, nav_url, regeo, geocode, get_weather_from_location
 from .services import llm
 from .db import (
     init_db,
@@ -234,6 +234,26 @@ def debug_scenario(request: Request) -> str:
     return request.headers.get("X-Debug-Scenario", "").strip()
 
 
+def _build_time_context() -> dict:
+    """构建当前时间上下文，注入给 LLM 以生成有时间感的命运独白。"""
+    now = datetime.now()
+    weekdays = ["周一", "周二", "周三", "周四", "周五", "周六", "周日"]
+    month = now.month
+    if month in (3, 4, 5):
+        season = "春"
+    elif month in (6, 7, 8):
+        season = "夏"
+    elif month in (9, 10, 11):
+        season = "秋"
+    else:
+        season = "冬"
+    return {
+        "weekday": weekdays[now.weekday()],
+        "hour": now.hour,
+        "season": season,
+    }
+
+
 def _poi_blob(poi: dict) -> str:
     return " ".join(
         [
@@ -328,7 +348,7 @@ def _select_candidates(pois: list[dict], intent: dict, limit: int = 5) -> list[d
 
     # Step 3：类型多样性（动态）
     # 之前固定 max_same_type=2 会导致「奶茶/快餐」这类单类型场景最多只出 2~5 个候选。
-    # 这里按“类型数 + 目标数量”动态放宽，保证能尽量凑满 limit。
+    # 这里按"类型数 + 目标数量"动态放宽，保证能尽量凑满 limit。
     unique_types = {get_type_label(p["type"]) for _, p in noisy}
     base_max_same_type = int(RANKING_CFG["diversity"]["max_same_type"])
     dynamic_max_same_type = max(base_max_same_type, math.ceil(limit / max(1, len(unique_types))))
@@ -388,6 +408,11 @@ def _select_candidates(pois: list[dict], intent: dict, limit: int = 5) -> list[d
             "risk_label":   make_risk_label(type_label),
             "nav_url":      nav_url(poi["name"], poi["location"]),
         })
+    # Wild Card：随机将一个非首位候选标记为「意外之选」，LLM 会用惊喜叙事角度处理它
+    if len(result) >= 2:
+        wild_idx = random.randint(1, len(result) - 1)
+        result[wild_idx]["wild_card"] = True
+
     return result
 
 
@@ -407,9 +432,11 @@ def _pick_with_temperature(candidates: list[dict], temperature: float) -> dict:
     return choices(candidates, weights=weights, k=1)[0]
 
 
-async def _enrich_ai_judgements(candidates: list[dict], user_prompt: str) -> None:
+async def _enrich_ai_judgements(
+    candidates: list[dict], user_prompt: str, context: dict | None = None
+) -> None:
     """
-    用 LLM 生成候选卡片的推荐理由。
+    用 LLM 生成候选卡片的命运独白。
     失败时保持原有模板文案，不抛异常。
     """
     if not candidates:
@@ -422,6 +449,7 @@ async def _enrich_ai_judgements(candidates: list[dict], user_prompt: str) -> Non
             eta_min=c["eta_min"],
             budget=c["budget_text"],
             user_prompt=user_prompt,
+            context={**(context or {}), "is_wild_card": c.get("wild_card", False)},
         )
         for c in candidates
     ]
@@ -565,12 +593,21 @@ async def recommend_init(req: InitReq, request: Request):
     except Exception:
         pass
 
+    # 构建时间 + 天气上下文，注入给后续 LLM 生成命运独白
+    session_context = _build_time_context()
+    try:
+        weather = await get_weather_from_location(location)
+        session_context.update(weather)
+    except Exception:
+        pass  # 天气获取失败不影响主流程
+
     session_set(session_id, {
         "prompt":       req.prompt,
         "intent":       intent,
         "location":     location,
         "address_name": address_name,
         "user_id":      resolved_user_id,
+        "context":      session_context,
         "created_at":   datetime.now().isoformat(),
     })
     return {
@@ -718,7 +755,7 @@ async def recommend_candidates(req: CandidateReq, request: Request):
 
     # 让候选卡片理由也尽量由 AI 生成；失败则保留模板文案
     try:
-        await _enrich_ai_judgements(candidates, session.get("prompt", ""))
+        await _enrich_ai_judgements(candidates, session.get("prompt", ""), session.get("context"))
     except Exception as exc:
         logger.warning("候选 ai_judgement 生成失败，使用模板: %s", exc)
 
@@ -729,9 +766,9 @@ async def recommend_candidates(req: CandidateReq, request: Request):
         "data": {
             "session_id":    req.session_id,
             "summary": (
-                f"已优先匹配“{' / '.join((intent.get('must_keywords') or [])[:2])}”等关键词，保留 {len(candidates)} 个候选"
+                f"已为你找到「{'、'.join((intent.get('must_keywords') or [])[:2])}」相关的 {len(candidates)} 个去处"
                 if intent.get("must_keywords")
-                else f"已排除超预算、过远、当前不适合的地点，保留 {len(candidates)} 个候选"
+                else f"命运已为你备好 {len(candidates)} 个候选，其中藏着一个意外之选"
             ),
             "candidates":    candidates,
             "fallback_used": fallback_used,
@@ -766,8 +803,8 @@ async def recommend_pick(req: PickReq, request: Request):
     pick_id = f"pick_{uuid4().hex[:10]}"
     pick_set(pick_id, req.session_id, picked)
 
-    # LLM 生成推荐理由，失败降级默认文案
-    reason = "离你近，现在去负担最低"
+    # LLM 生成推荐理由（命运独白），失败降级默认文案
+    reason = "就是今天，就是这里"
     try:
         session_data = session_get(req.session_id) or {}
         reason = await llm.pick_reason(
@@ -776,6 +813,7 @@ async def recommend_pick(req: PickReq, request: Request):
             eta_min=picked["eta_min"],
             budget=picked["budget_text"],
             user_prompt=session_data.get("prompt", ""),
+            context=session_data.get("context"),
         )
     except Exception as exc:
         logger.warning("LLM pick_reason 失败，使用默认文案: %s", exc)

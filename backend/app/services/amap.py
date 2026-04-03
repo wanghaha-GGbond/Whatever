@@ -168,6 +168,39 @@ async def geocode(address: str) -> str:
         return ""
 
 
+async def get_weather_from_location(location: str) -> dict:
+    """
+    从坐标获取当前天气信息（高德天气API）。
+    失败时静默返回 {}，不阻塞主流程。
+    """
+    try:
+        # Step 1: 逆地理编码获取 adcode
+        qs = f"key={_key()}&location={location}&extensions=base&roadlevel=1"
+        regeo_data = await _request_json(f"/geocode/regeo?{qs}", 3.0)
+        if regeo_data.get("status") != "1":
+            return {}
+        adcode = (
+            regeo_data.get("regeocode", {})
+            .get("addressComponent", {})
+            .get("adcode", "")
+        )
+        if not adcode:
+            return {}
+
+        # Step 2: 查询实况天气
+        qs2 = f"key={_key()}&city={adcode}&extensions=base&output=JSON"
+        weather_data = await _request_json(f"/weather/weatherInfo?{qs2}", 3.0)
+        if weather_data.get("status") != "1" or not weather_data.get("lives"):
+            return {}
+        live = weather_data["lives"][0]
+        return {
+            "weather": live.get("weather", ""),
+            "temperature": live.get("temperature", ""),
+        }
+    except Exception:
+        return {}
+
+
 def nav_url(name: str, location: str) -> str:
     """生成高德地图导航链接（网页版，移动端会唤起 App）。"""
     try:
