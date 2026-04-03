@@ -139,16 +139,12 @@ def parse_intent(prompt: str) -> dict:
     else:
         poi_types = DEFAULT_TYPES  # 兜底：公园+咖啡+书店+博物馆
 
-    # 5. 补充关键词搜索（用于 Amap keywords 参数）
+    # 5. 补充关键词搜索（仅用于品牌/口味精确约束，高德用 | 做 OR 匹配）
+    # 注意：通用心情词不传 keywords，让 poi_types 独立过滤；
+    # 多词用空格拼接会让高德做整体短语匹配，导致 0 结果。
     keywords = ""
     if must_keywords:
-        keywords = " ".join(_unique_keep_order(must_keywords))
-    elif re.search(r"安静|一个人|独处|宁静", text):
-        keywords = "公园 书店 咖啡"
-    elif re.search(r"热闹|朋友|聚会|约", text):
-        keywords = "商场 餐厅 咖啡"
-    elif re.search(r"新鲜|探索|好玩|有意思", text):
-        keywords = "展览 文化 创意园"
+        keywords = "|".join(_unique_keep_order(must_keywords))
 
     return {
         "radius_m": radius_m,
