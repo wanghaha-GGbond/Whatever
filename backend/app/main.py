@@ -13,7 +13,7 @@ from .routes import router
 
 logger = logging.getLogger(__name__)
 
-app = FastAPI(title="P003 Mock API", version="0.1.0")
+app = FastAPI(title="P003 Whatever API", version="0.2.0")
 
 
 def _setup_logging() -> None:
@@ -86,4 +86,22 @@ async def log_request_time(request: FastAPIRequest, call_next):
 
 @app.get("/health")
 def health():
-    return {"status": "ok"}
+    from .db import _session_scope
+    import sqlalchemy as sa
+
+    checks: dict[str, str] = {}
+
+    # 检查关键环境变量配置
+    checks["amap_key"]     = "ok" if os.getenv("AMAP_KEY") else "missing"
+    checks["deepseek_key"] = "ok" if os.getenv("DEEPSEEK_API_KEY") else "missing"
+
+    # 检查数据库连通性
+    try:
+        with _session_scope() as db:
+            db.execute(sa.text("SELECT 1"))
+        checks["db"] = "ok"
+    except Exception as e:
+        checks["db"] = f"error: {e}"
+
+    overall = "ok" if all(v == "ok" for v in checks.values()) else "degraded"
+    return {"status": overall, "version": "0.2.0", "checks": checks}

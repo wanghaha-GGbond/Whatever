@@ -35,7 +35,9 @@ export function Home() {
   const [manualLocation, setManualLocation] = useState('');
   const [manualLocationVisible, setManualLocationVisible] = useState(false);
   const [submitError, setSubmitError] = useState('');
+  const [slowWarning, setSlowWarning] = useState(false);
   const voiceToastTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const slowTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const locationRef = useRef<string | undefined>(undefined);
 
   // 页面加载后静默获取位置（不阻塞提交）
@@ -95,6 +97,8 @@ export function Home() {
   const handleSubmit = async () => {
     setLoading(true);
     setSubmitError('');
+    setSlowWarning(false);
+    slowTimer.current = setTimeout(() => setSlowWarning(true), 8000);
     let shouldNavigate = false;
     try {
       const finalPrompt = buildFinalPrompt();
@@ -133,6 +137,8 @@ export function Home() {
         }
       }
     } finally {
+      if (slowTimer.current) clearTimeout(slowTimer.current);
+      setSlowWarning(false);
       setLoading(false);
       if (shouldNavigate) navigate('/candidates');
     }
@@ -266,7 +272,12 @@ export function Home() {
       {/* CTA 固定底部 */}
       <div className="fixed bottom-16 left-0 right-0 z-10">
         <div className="bg-gradient-to-t from-[#f0fdf4]/95 to-transparent pb-3 pt-4 px-5">
-          <div className="max-w-2xl mx-auto">
+          <div className="max-w-2xl mx-auto space-y-2">
+            {slowWarning && (
+              <div className="text-center text-xs text-[#6e6e73] animate-pulse">
+                服务唤醒中，首次启动约需 20–40 秒，请稍候…
+              </div>
+            )}
             <PrimaryButton onClick={handleSubmit} disabled={loading}>
               <div className="flex items-center justify-center gap-2">
                 {loading && <Loader2 className="w-4 h-4 animate-spin" />}

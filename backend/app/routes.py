@@ -611,15 +611,44 @@ async def recommend_candidates(req: CandidateReq, request: Request):
     fallback_used = False
 
     try:
+        poi_types  = intent["poi_types"]
+        keywords   = intent.get("keywords", "")
+        radius     = intent["radius_m"]
+        fetch_limit = min(req.limit * 4, 25)
+
         pois = await search_around(
-            location=location,
-            poi_types=intent["poi_types"],
-            keywords=intent.get("keywords", ""),
-            radius=intent["radius_m"],
-            limit=min(req.limit * 4, 25),
+            location=location, poi_types=poi_types,
+            keywords=keywords, radius=radius, limit=fetch_limit,
         )
+
+        # 降级重试 1：去掉 keywords，有时品牌词过滤导致空结果
+        if not pois and keywords:
+            logger.info("首次查询空结果，去掉 keywords 重试")
+            pois = await search_around(
+                location=location, poi_types=poi_types,
+                keywords="", radius=radius, limit=fetch_limit,
+            )
+
+        # 降级重试 2：扩大半径（最大 15km）
         if not pois:
-            raise ValueError("高德返回空结果")
+            wider = min(15000, max(int(radius * 2.5), 5000))
+            logger.info("仍为空，扩圈至 %dm 重试", wider)
+            pois = await search_around(
+                location=location, poi_types=poi_types,
+                keywords="", radius=wider, limit=fetch_limit,
+            )
+
+        # 降级重试 3：换默认综合类型 + 扩圈
+        if not pois and poi_types != DEFAULT_TYPES:
+            wider = min(15000, max(int(radius * 2.5), 5000))
+            logger.info("仍为空，改用默认类型 + %dm 重试", wider)
+            pois = await search_around(
+                location=location, poi_types=DEFAULT_TYPES,
+                keywords="", radius=wider, limit=fetch_limit,
+            )
+
+        if not pois:
+            raise ValueError("高德返回空结果（三次降级均无结果）")
         candidates = _select_candidates(pois, intent, limit=req.limit)
 
         # 不足 10 个时，自动扩圈补齐（先同类型扩圈，再用默认综合类型补充）

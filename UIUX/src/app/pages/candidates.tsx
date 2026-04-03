@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate } from 'react-router';
 import { ChevronDown, Loader2, RotateCw } from 'lucide-react';
 import { AnimatePresence, motion } from 'motion/react';
@@ -111,57 +111,62 @@ export function Candidates() {
   const [launching, setLaunching] = useState(false);
   const [loadError, setLoadError] = useState('');
   const [drawError, setDrawError] = useState('');
+  const [slowWarning, setSlowWarning] = useState(false);
+  const slowTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [budgetFilter, setBudgetFilter] = useState<'all' | 'le30' | 'le50'>('all');
   const [distanceSort, setDistanceSort] = useState<'default' | 'near' | 'far'>('default');
   const [typeFilter, setTypeFilter] = useState('all');
 
-  useEffect(() => {
-    const run = async () => {
-      const sessionId = sessionStore.getSessionId();
-      if (!sessionId) {
-        navigate('/');
+  const fetchCandidates = useCallback(async () => {
+    const sessionId = sessionStore.getSessionId();
+    if (!sessionId) { navigate('/'); return; }
+    setLoadError('');
+    setLoading(true);
+    setSlowWarning(false);
+    slowTimer.current = setTimeout(() => setSlowWarning(true), 8000);
+
+    if (sessionId.startsWith('mock_session_fallback')) {
+      if (!ENABLE_MOCK_FALLBACK) {
+        setLoadError('当前环境已禁用本地兜底，请返回首页重新发起推荐。');
+        setItems([]);
+        setSummary('');
+        setLoading(false);
+        if (slowTimer.current) clearTimeout(slowTimer.current);
         return;
       }
-      setLoadError('');
-      // mock session fallback：跳过 API 直接用 mock 数据
-      if (sessionId.startsWith('mock_session_fallback')) {
-        if (!ENABLE_MOCK_FALLBACK) {
-          setLoadError('当前环境已禁用本地兜底，请返回首页重新发起推荐。');
-          setItems([]);
-          setSummary('');
-          setLoading(false);
-          return;
-        }
+      const fallbackItems = shuffleCandidates(MOCK_CANDIDATES);
+      setItems(fallbackItems);
+      sessionStore.setCandidatePool(toDrawPool(fallbackItems));
+      setSummary(MOCK_SUMMARY);
+      setLoading(false);
+      if (slowTimer.current) clearTimeout(slowTimer.current);
+      return;
+    }
+    try {
+      const res = await api.getCandidates(sessionId);
+      setItems(res.data.candidates);
+      sessionStore.setCandidatePool(toDrawPool(res.data.candidates));
+      track('candidates_viewed', { count: res.data.candidates.length, fallback: res.data.fallback_used }, sessionId, undefined);
+      setSummary(res.data.summary);
+    } catch {
+      if (ENABLE_MOCK_FALLBACK) {
         const fallbackItems = shuffleCandidates(MOCK_CANDIDATES);
         setItems(fallbackItems);
         sessionStore.setCandidatePool(toDrawPool(fallbackItems));
         setSummary(MOCK_SUMMARY);
-        setLoading(false);
-        return;
+      } else {
+        setItems([]);
+        setSummary('');
+        setLoadError('候选加载失败，请返回首页重试。');
       }
-      try {
-        const res = await api.getCandidates(sessionId);
-        setItems(res.data.candidates);
-        sessionStore.setCandidatePool(toDrawPool(res.data.candidates));
-        track('candidates_viewed', { count: res.data.candidates.length, fallback: res.data.fallback_used }, sessionId, undefined);
-        setSummary(res.data.summary);
-      } catch {
-        if (ENABLE_MOCK_FALLBACK) {
-          const fallbackItems = shuffleCandidates(MOCK_CANDIDATES);
-          setItems(fallbackItems);
-          sessionStore.setCandidatePool(toDrawPool(fallbackItems));
-          setSummary(MOCK_SUMMARY);
-        } else {
-          setItems([]);
-          setSummary('');
-          setLoadError('候选加载失败，请稍后重试。');
-        }
-      } finally {
-        setLoading(false);
-      }
-    };
-    run();
+    } finally {
+      if (slowTimer.current) clearTimeout(slowTimer.current);
+      setSlowWarning(false);
+      setLoading(false);
+    }
   }, [navigate]);
+
+  useEffect(() => { fetchCandidates(); }, [fetchCandidates]);
 
   const handleDraw = async () => {
     const sessionId = sessionStore.getSessionId();
@@ -311,9 +316,21 @@ export function Candidates() {
             {summary}
           </div>
         )}
+        {slowWarning && !loadError && (
+          <div className="text-center text-xs text-[#6e6e73] animate-pulse py-1">
+            服务唤醒中，首次启动约需 20–40 秒…
+          </div>
+        )}
         {loadError && (
-          <div className="bg-amber-50 border border-amber-300 text-amber-800 rounded-2xl px-4 py-3 text-sm">
-            {loadError}
+          <div className="bg-amber-50 border border-amber-300 text-amber-800 rounded-2xl px-4 py-4 text-sm space-y-3">
+            <p>{loadError}</p>
+            <button
+              onClick={fetchCandidates}
+              className="flex items-center gap-1.5 text-xs font-medium text-amber-900 bg-amber-100 hover:bg-amber-200 px-3 py-1.5 rounded-xl transition-colors"
+            >
+              <RotateCw className="w-3.5 h-3.5" />
+              重新加载
+            </button>
           </div>
         )}
         {drawError && (
