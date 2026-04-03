@@ -123,6 +123,7 @@ export function Candidates() {
     setLoadError('');
     setLoading(true);
     setSlowWarning(false);
+    if (slowTimer.current) clearTimeout(slowTimer.current);
     slowTimer.current = setTimeout(() => setSlowWarning(true), 8000);
 
     if (sessionId.startsWith('mock_session_fallback')) {

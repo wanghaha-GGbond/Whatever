@@ -100,8 +100,8 @@ def health():
         with _session_scope() as db:
             db.execute(sa.text("SELECT 1"))
         checks["db"] = "ok"
-    except Exception as e:
-        checks["db"] = f"error: {e}"
+    except Exception:
+        checks["db"] = "error"
 
     overall = "ok" if all(v == "ok" for v in checks.values()) else "degraded"
     return {"status": overall, "version": "0.2.0", "checks": checks}
