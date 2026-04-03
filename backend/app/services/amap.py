@@ -168,6 +168,36 @@ async def geocode(address: str) -> str:
         return ""
 
 
+async def get_static_map(
+    poi_location: str,
+    user_location: str = "",
+    size: str = "750*380",
+    zoom: int = 15,
+) -> bytes:
+    """
+    获取高德静态地图图片字节流（由后端代理，不暴露 key）。
+    poi_location: "lng,lat"  目标地点
+    user_location: "lng,lat" 用户当前位置（可选，显示蓝点）
+    """
+    markers = f"large,0x16a34a,W:{poi_location}"
+    if user_location and user_location != poi_location:
+        markers += f"|mid,0x3B82F6,:{user_location}"
+
+    qs = (
+        f"key={_key()}"
+        f"&zoom={zoom}"
+        f"&size={size}"
+        f"&markers={markers}"
+        f"&scale=2"
+    )
+
+    proxy = _proxy()
+    async with httpx.AsyncClient(timeout=6.0, proxy=proxy, trust_env=False) as client:
+        resp = await client.get(f"{AMAP_BASE}/staticmap?{qs}")
+        resp.raise_for_status()
+        return resp.content
+
+
 async def get_weather_from_location(location: str) -> dict:
     """
     从坐标获取当前天气信息（高德天气API）。

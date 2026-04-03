@@ -156,7 +156,7 @@ export const api = {
   },
 
   pick(sessionId: string) {
-    return request<{ code: string; data: { pick_id: string; picked: { candidate_id?: string; name: string; type: string; distance_m?: number; eta_min: number; transport_mode?: string; budget_text: string; reason: string; nav_url?: string }; fallback_used: boolean } }>(
+    return request<{ code: string; data: { pick_id: string; picked: { candidate_id?: string; name: string; type: string; distance_m?: number; eta_min: number; transport_mode?: string; budget_text: string; reason: string; nav_url?: string; location?: string }; fallback_used: boolean } }>(
       '/recommend/pick',
       {
         method: 'POST',

@@ -1,11 +1,12 @@
 import { useState, useEffect, useRef } from 'react';
-import { Navigation, RotateCw, MessageSquarePlus, Sparkles } from 'lucide-react';
+import { Navigation, RotateCw, MessageSquarePlus, Sparkles, MapPin } from 'lucide-react';
 import { PersonaTabs } from '../components/persona-tabs';
 import { PersonaReviewCard } from '../components/persona-review-card';
 import { PrimaryButton } from '../components/primary-button';
 import { motion, AnimatePresence } from 'motion/react';
 import { api } from '../lib/api';
 import { sessionStore } from '../lib/session';
+import { API_BASE_URL } from '../lib/env';
 import { useNavigate } from 'react-router';
 import { mockPlaces, personaReviews } from '../lib/mock-data';
 import { track } from '../lib/analytics';
@@ -27,6 +28,7 @@ interface PickedPlace {
   budget_text: string;
   reason: string;
   nav_url?: string;
+  location?: string;
 }
 
 interface ReviewData {
@@ -676,6 +678,28 @@ export function Result() {
             <div className="text-sm text-amber-700">暂无可展示的抽签结果，请返回候选页重试。</div>
           )}
         </motion.div>
+
+        {/* 地图预览 */}
+        {picked?.location && sessionStore.getSessionId() && sessionStore.getPickId() && (
+          <motion.div
+            initial={{ opacity: 0, y: 16 }}
+            animate={{ opacity: 1, y: 0 }}
+            transition={{ delay: 0.32 }}
+            className="rounded-2xl overflow-hidden border border-black/8 shadow-sm cursor-pointer active:opacity-80 transition-opacity"
+            onClick={handleNavigate}
+          >
+            <img
+              src={`${API_BASE_URL}/map/preview?session_id=${sessionStore.getSessionId()}&pick_id=${sessionStore.getPickId()}`}
+              alt="地图预览"
+              className="w-full h-[160px] object-cover"
+              onError={(e) => { (e.currentTarget.parentElement as HTMLElement).style.display = 'none'; }}
+            />
+            <div className="px-4 py-2.5 bg-white/80 backdrop-blur-sm flex items-center gap-2 text-xs text-[#6e6e73]">
+              <MapPin className="w-3.5 h-3.5 text-emerald-600 shrink-0" />
+              <span>点击前往导航</span>
+            </div>
+          </motion.div>
+        )}
 
         <motion.div
           initial={{ opacity: 0, y: 20 }}

@@ -19,7 +19,7 @@ from pydantic import BaseModel, Field
 from .services.intent_parser import (
     parse_intent, eta_min, budget_text, make_judgement, make_risk_label, transport_label, DEFAULT_TYPES,
 )
-from .services.amap import search_around, get_type_label, nav_url, regeo, geocode, get_weather_from_location
+from .services.amap import search_around, get_type_label, nav_url, regeo, geocode, get_weather_from_location, get_static_map
 from .services import llm
 from .db import (
     init_db,
@@ -406,6 +406,7 @@ def _select_candidates(pois: list[dict], intent: dict, limit: int = 5) -> list[d
             "score":        round(max(0.05, min(s, 1.0)), 4),
             "ai_judgement": make_judgement(type_label),
             "risk_label":   make_risk_label(type_label),
+            "poi_location": poi.get("location", ""),
             "nav_url":      nav_url(poi["name"], poi["location"]),
         })
     # Wild Card：随机将一个非首位候选标记为「意外之选」，LLM 会用惊喜叙事角度处理它
@@ -833,11 +834,46 @@ async def recommend_pick(req: PickReq, request: Request):
                 "budget_text":  picked["budget_text"],
                 "reason":       reason,
                 "nav_url":      picked.get("nav_url", ""),
+                "location":     picked.get("poi_location", ""),
             },
             "alternatives": [c["candidate_id"] for c in candidates if c != picked][:2],
             "fallback_used": False,
         },
     }
+
+
+@router.get("/map/preview")
+async def map_preview(session_id: str, pick_id: str):
+    """
+    代理高德静态地图图片，避免在前端暴露 API Key。
+    返回 image/png 字节流。
+    """
+    from fastapi.responses import Response as FastAPIResponse
+    session = session_get(session_id)
+    pick_data = pick_get(pick_id)
+    if not session or not pick_data:
+        raise HTTPException(status_code=404, detail="session or pick not found")
+
+    poi_location = pick_data["picked"].get("poi_location") or pick_data["picked"].get("location", "")
+    user_location = session.get("location", "")
+
+    if not poi_location:
+        raise HTTPException(status_code=404, detail="poi location not available")
+
+    try:
+        image_bytes = await get_static_map(
+            poi_location=poi_location,
+            user_location=user_location,
+        )
+    except Exception as exc:
+        logger.warning("静态地图获取失败: %s", exc)
+        raise HTTPException(status_code=502, detail="map service unavailable")
+
+    return FastAPIResponse(
+        content=image_bytes,
+        media_type="image/png",
+        headers={"Cache-Control": "public, max-age=300"},
+    )
 
 
 class PersonaReq(BaseModel):
