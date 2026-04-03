@@ -135,7 +135,16 @@ def parse_intent(prompt: str) -> dict:
     if forced_types:
         poi_types = "|".join(_unique_keep_order(forced_types))
     elif matched_types:
-        poi_types = "|".join(matched_types)
+        # 展开所有 type code，去重后再拼接，避免不同 category 含相同类型码重复
+        seen_codes: set[str] = set()
+        deduped_codes: list[str] = []
+        for types_str in matched_types:
+            for code in types_str.split("|"):
+                code = code.strip()
+                if code and code not in seen_codes:
+                    seen_codes.add(code)
+                    deduped_codes.append(code)
+        poi_types = "|".join(deduped_codes)
     else:
         poi_types = DEFAULT_TYPES  # 兜底：公园+咖啡+书店+博物馆
 

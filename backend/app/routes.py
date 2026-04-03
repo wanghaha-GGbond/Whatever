@@ -653,6 +653,7 @@ async def recommend_candidates(req: CandidateReq, request: Request):
         keywords   = intent.get("keywords", "")
         radius     = intent["radius_m"]
         fetch_limit = min(req.limit * 4, 25)
+        effective_types = poi_types  # 跟踪降级后实际使用的类型，供补齐时复用
 
         pois = await search_around(
             location=location, poi_types=poi_types,
@@ -680,8 +681,9 @@ async def recommend_candidates(req: CandidateReq, request: Request):
         if not pois and poi_types != DEFAULT_TYPES:
             wider = min(15000, max(int(radius * 2.5), 5000))
             logger.info("仍为空，改用默认类型 + %dm 重试", wider)
+            effective_types = DEFAULT_TYPES  # 记录实际生效的类型
             pois = await search_around(
-                location=location, poi_types=DEFAULT_TYPES,
+                location=location, poi_types=effective_types,
                 keywords="", radius=wider, limit=fetch_limit,
             )
 
@@ -697,7 +699,7 @@ async def recommend_candidates(req: CandidateReq, request: Request):
             try:
                 extra_same_type = await search_around(
                     location=location,
-                    poi_types=intent["poi_types"],
+                    poi_types=effective_types,
                     keywords="",
                     radius=expanded_radius,
                     limit=25,
@@ -709,7 +711,7 @@ async def recommend_candidates(req: CandidateReq, request: Request):
             except Exception as exc:
                 logger.warning("同类型扩圈补齐失败: %s", exc)
 
-            if len(merged_pois) < req.limit and intent["poi_types"] != DEFAULT_TYPES:
+            if len(merged_pois) < req.limit and effective_types != DEFAULT_TYPES:
                 try:
                     extra_default = await search_around(
                         location=location,

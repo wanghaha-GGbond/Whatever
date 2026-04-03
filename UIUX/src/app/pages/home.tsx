@@ -4,7 +4,7 @@ import { LocationBar } from '../components/location-bar';
 import { ChipGroup } from '../components/chip-group';
 import { PrimaryButton } from '../components/primary-button';
 import { Mic, Loader2, RotateCw, MapPin } from 'lucide-react';
-import { ApiError, api } from '../lib/api';
+import { ApiError, api, HistoryItem } from '../lib/api';
 import { sessionStore } from '../lib/session';
 import { track } from '../lib/analytics';
 import { ENABLE_MOCK_FALLBACK } from '../lib/env';
@@ -36,6 +36,7 @@ export function Home() {
   const [manualLocationVisible, setManualLocationVisible] = useState(false);
   const [submitError, setSubmitError] = useState('');
   const [slowWarning, setSlowWarning] = useState(false);
+  const [lastVisit, setLastVisit] = useState<HistoryItem | null>(null);
   const voiceToastTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const slowTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const locationRef = useRef<string | undefined>(undefined);
@@ -55,6 +56,13 @@ export function Home() {
       .catch(() => {
         // 匿名身份初始化失败不阻塞主流程
       });
+
+    api.getHistory(sessionStore.getUserId() || undefined)
+      .then((res) => {
+        const first = res.data.list?.[0];
+        if (first) setLastVisit(first);
+      })
+      .catch(() => {});
 
     getLocation().then(async (loc) => {
       locationRef.current = loc;
@@ -250,23 +258,27 @@ export function Home() {
           />
         </div>
 
-        {/* 最近一次记录卡片（静态 mock） */}
-        <div className="bg-white/70 backdrop-blur-2xl rounded-3xl p-5 border border-white/50 shadow-[0_8px_32px_rgba(0,0,0,0.08)]">
-          <div className="flex items-center justify-between">
-            <div>
-              <div className="text-xs text-[#6e6e73] mb-0.5">上次去了</div>
-              <div className="text-sm font-semibold text-[#1d1d1f]">上生新所</div>
-              <div className="text-xs text-[#6e6e73] mt-0.5">周六 16:20</div>
+        {/* 最近一次记录卡片（动态） */}
+        {lastVisit && (
+          <div className="bg-white/70 backdrop-blur-2xl rounded-3xl p-5 border border-white/50 shadow-[0_8px_32px_rgba(0,0,0,0.08)]">
+            <div className="flex items-center justify-between">
+              <div>
+                <div className="text-xs text-[#6e6e73] mb-0.5">上次去了</div>
+                <div className="text-sm font-semibold text-[#1d1d1f]">{lastVisit.name}</div>
+                <div className="text-xs text-[#6e6e73] mt-0.5">
+                  {new Date(lastVisit.timestamp).toLocaleDateString('zh-CN', { month: 'numeric', day: 'numeric', weekday: 'short' })}
+                </div>
+              </div>
+              <button
+                onClick={() => navigate('/history')}
+                className="text-xs text-[#1d1d1f] bg-black/5 rounded-2xl px-3 py-1.5 hover:bg-black/10 transition-colors flex items-center gap-1"
+              >
+                <RotateCw className="w-3 h-3" />
+                查看记录
+              </button>
             </div>
-            <button
-              onClick={() => navigate('/candidates')}
-              className="text-xs text-[#1d1d1f] bg-black/5 rounded-2xl px-3 py-1.5 hover:bg-black/10 transition-colors flex items-center gap-1"
-            >
-              <RotateCw className="w-3 h-3" />
-              再抽一次
-            </button>
           </div>
-        </div>
+        )}
       </div>
 
       {/* CTA 固定底部 */}
