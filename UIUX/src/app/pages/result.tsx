@@ -1,7 +1,8 @@
-import { useState, useEffect, useRef } from 'react';
-import { Navigation, RotateCw, MessageSquarePlus, Sparkles, MapPin } from 'lucide-react';
+import { useState, useEffect, useRef, useCallback } from 'react';
+import { Navigation, RotateCw, MessageSquarePlus, Sparkles, MapPin, Loader2 } from 'lucide-react';
 import { PersonaTabs } from '../components/persona-tabs';
-import { PersonaReviewCard } from '../components/persona-review-card';
+import { PersonaSliceView } from '../components/persona-slice-view';
+import { ShareCardNode } from '../components/share-card-node';
 import { PrimaryButton } from '../components/primary-button';
 import { motion, AnimatePresence } from 'motion/react';
 import { api } from '../lib/api';
@@ -11,6 +12,8 @@ import { useNavigate } from 'react-router';
 import { mockPlaces, personaReviews } from '../lib/mock-data';
 import { track } from '../lib/analytics';
 import { ENABLE_MOCK_FALLBACK } from '../lib/env';
+import { useShareCard } from '../hooks/use-share-card';
+import type { PersonaSlice } from '../types';
 
 interface DrawCard {
   candidate_id: string;
@@ -33,8 +36,10 @@ interface PickedPlace {
 
 interface ReviewData {
   persona: string;
+  summary: string;
+  slices: PersonaSlice[];
   review: string;
-  risk: string;
+  risk: string | null;
   conclusion: string;
 }
 
@@ -207,9 +212,11 @@ function findPickedCardIndex(cards: DrawCard[], picked: PickedPlace): number {
 
 function buildFallbackReview(persona: string, picked?: PickedPlace | null): ReviewData {
   const base = personaReviews[persona] ?? personaReviews['独处型'];
-  if (!picked) return base;
+  if (!picked) return { ...base, summary: base.review, slices: [] };
   return {
     ...base,
+    summary: base.review,
+    slices: [],
     review: `${picked.name}：${base.review}`,
     risk: `${picked.name}可能的风险：${base.risk}`,
   };
@@ -462,7 +469,7 @@ export function Result() {
   const [isDrawing, setIsDrawing] = useState(true);
   const [isRevealing, setIsRevealing] = useState(false);
   const [selectedPersona, setSelectedPersona] = useState('独处型');
-  const [review, setReview] = useState<ReviewData | null>(null);
+  const [reviewCache, setReviewCache] = useState<Record<string, ReviewData>>({});
   const [reviewLoading, setReviewLoading] = useState(false);
   const [reviewError, setReviewError] = useState('');
   const [pageError, setPageError] = useState('');
@@ -471,6 +478,14 @@ export function Result() {
   const [drawCards, setDrawCards] = useState<DrawCard[]>([]);
   const [settleIndex, setSettleIndex] = useState(0);
   const revealTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const review = reviewCache[selectedPersona] ?? null;
+
+  const { share, sharing } = useShareCard();
+
+  const sharePersona2 = selectedPersona === '务实型' ? '独处型' : '务实型';
+  const shareReview1 = reviewCache[selectedPersona];
+  const shareReview2 = reviewCache[sharePersona2];
+  const shareReady = !!picked && !!shareReview1 && !!shareReview2;
 
   const personas = ['独处型', '探索型', '务实型', '审美型', '老饕', '效率党', '精算师', '氛围感'];
 
@@ -478,6 +493,33 @@ export function Result() {
     setSelectedPersona(persona);
     track('persona_tab_clicked', { persona }, sessionStore.getSessionId(), sessionStore.getDeviceId());
   };
+
+  const loadPersonaReview = useCallback(async (persona: string, showLoading = true) => {
+    const sessionId = sessionStore.getSessionId();
+    const pickId = sessionStore.getPickId();
+    if (!sessionId || !pickId) return;
+
+    let alreadyCached = false;
+    setReviewCache((prev) => { alreadyCached = !!prev[persona]; return prev; });
+    if (alreadyCached) return;
+
+    if (showLoading) { setReviewLoading(true); setReviewError(''); }
+    try {
+      const reviewRes = await api.personaReview(sessionId, pickId, persona);
+      setReviewCache((prev) => ({ ...prev, [persona]: reviewRes.data }));
+    } catch {
+      if (showLoading) {
+        if (ENABLE_MOCK_FALLBACK) {
+          const fb = buildFallbackReview(persona, picked);
+          setReviewCache((prev) => ({ ...prev, [persona]: fb }));
+        } else {
+          setReviewError('人格试玩加载失败，请稍后重试。');
+        }
+      }
+    } finally {
+      if (showLoading) setReviewLoading(false);
+    }
+  }, [picked]); // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => {
     const loadPicked = async () => {
@@ -564,31 +606,20 @@ export function Result() {
     };
   }, [navigate]);
 
+  // 当抽卡结束、选中人格变化时，加载当前人格 review
   useEffect(() => {
-    const loadReview = async () => {
-      const sessionId = sessionStore.getSessionId();
-      const pickId = sessionStore.getPickId();
-      if (!sessionId || !pickId) return;
+    if (!isDrawing) {
+      loadPersonaReview(selectedPersona);
+    }
+  }, [selectedPersona, isDrawing, loadPersonaReview]);
 
-      setReviewError('');
-      setReviewLoading(true);
-      try {
-        const reviewRes = await api.personaReview(sessionId, pickId, selectedPersona);
-        setReview(reviewRes.data);
-      } catch {
-        if (ENABLE_MOCK_FALLBACK) {
-          setReview(buildFallbackReview(selectedPersona, picked));
-        } else {
-          setReview(null);
-          setReviewError('人格试玩加载失败，请稍后重试。');
-        }
-      } finally {
-        setReviewLoading(false);
-      }
-    };
-
-    if (!isDrawing) loadReview();
-  }, [selectedPersona, isDrawing, picked]);
+  // 结果页挂载后预加载务实型（用于分享卡片第2条摘要）
+  useEffect(() => {
+    if (!isDrawing) {
+      const preloadPersona = selectedPersona === '务实型' ? '独处型' : '务实型';
+      loadPersonaReview(preloadPersona, false);
+    }
+  }, [isDrawing]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const onFeedback = () => {
     const sessionId = sessionStore.getSessionId();
@@ -715,10 +746,10 @@ export function Result() {
 
           <div className="min-h-[140px]">
             {reviewLoading ? (
-              <div className="bg-white/70 backdrop-blur-2xl rounded-3xl p-5 border border-white/50 space-y-3">
-                <div className="bg-black/8 h-4 rounded-2xl animate-pulse w-3/4" />
-                <div className="bg-black/8 h-4 rounded-2xl animate-pulse w-1/2" />
-                <div className="bg-black/5 h-4 rounded-2xl animate-pulse w-2/3 mt-4" />
+              <div className="flex gap-3 overflow-hidden">
+                {[1, 2].map((i) => (
+                  <div key={i} className="flex-shrink-0 w-[200px] h-[120px] bg-white/70 rounded-2xl animate-pulse border border-white/50" />
+                ))}
               </div>
             ) : reviewError ? (
               <div className="rounded-2xl border border-amber-300 bg-amber-50 px-4 py-3 text-sm text-amber-800">
@@ -733,7 +764,7 @@ export function Result() {
                   exit={{ opacity: 0, x: -16 }}
                   transition={{ duration: 0.18, ease: 'easeOut' }}
                 >
-                  <PersonaReviewCard review={review} />
+                  <PersonaSliceView slices={review.slices} />
                 </motion.div>
               </AnimatePresence>
             ) : null}
@@ -746,13 +777,29 @@ export function Result() {
           transition={{ delay: 0.6 }}
           className="space-y-3 pb-8"
         >
-          <PrimaryButton onClick={handleNavigate}>
+          {/* 分享主按钮 */}
+          <PrimaryButton
+            onClick={() => picked && share(picked.name)}
+            disabled={sharing || !shareReady}
+          >
             <div className="flex items-center justify-center gap-2">
-              <Navigation className="w-5 h-5" />
-              去导航
+              {sharing ? (
+                <Loader2 className="w-4 h-4 animate-spin" />
+              ) : (
+                <Sparkles className="w-4 h-4" />
+              )}
+              {sharing ? '生成分享图…' : shareReady ? '✦ 分享这个命运' : '准备分享卡…'}
             </div>
           </PrimaryButton>
-          <div className="grid grid-cols-2 gap-3">
+
+          {/* 次级操作 */}
+          <div className="grid grid-cols-3 gap-2">
+            <PrimaryButton variant="outline" onClick={handleNavigate}>
+              <div className="flex items-center justify-center gap-1.5">
+                <Navigation className="w-4 h-4" />
+                导航
+              </div>
+            </PrimaryButton>
             <PrimaryButton
               variant="outline"
               onClick={() => {
@@ -760,20 +807,36 @@ export function Result() {
                 navigate('/candidates');
               }}
             >
-              <div className="flex items-center justify-center gap-2">
+              <div className="flex items-center justify-center gap-1.5">
                 <RotateCw className="w-4 h-4" />
-                重新抽
+                重抽
               </div>
             </PrimaryButton>
             <PrimaryButton variant="outline" onClick={onFeedback}>
-              <div className="flex items-center justify-center gap-2">
+              <div className="flex items-center justify-center gap-1.5">
                 <MessageSquarePlus className="w-4 h-4" />
-                去后写反馈
+                反馈
               </div>
             </PrimaryButton>
           </div>
         </motion.div>
       </div>
+
+      {/* 隐藏的分享卡片 DOM 节点，供 html2canvas 截图 */}
+      {picked && (
+        <ShareCardNode
+          placeName={picked.name}
+          placeType={picked.type}
+          etaMin={picked.eta_min}
+          transportMode={picked.transport_mode ?? '出行'}
+          budgetText={picked.budget_text}
+          destinyQuote={picked.reason}
+          personaLabel1={selectedPersona}
+          personaSummary1={shareReview1?.summary ?? shareReview1?.review ?? ''}
+          personaLabel2={sharePersona2}
+          personaSummary2={shareReview2?.summary ?? shareReview2?.review ?? ''}
+        />
+      )}
     </div>
   );
 }
