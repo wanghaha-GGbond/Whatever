@@ -283,7 +283,8 @@ def _score_poi(poi: dict, intent: dict, type_weights: dict | None = None) -> flo
     score = 1.0
     radius = intent.get("radius_m", 4000)
     dist = poi.get("distance", radius)
-    score -= w["distance"] * min(dist / radius, 1.0)
+    # sqrt 曲线让距离惩罚更平缓，避免半径内远端好地方被线性压死
+    score -= w["distance"] * min(math.sqrt(dist / radius), 1.0)
 
     budget_max = intent.get("budget_max")
     pl = poi.get("price_level", "")
@@ -844,6 +845,29 @@ async def recommend_pick(req: PickReq, request: Request):
     }
 
 
+@router.get("/inspire")
+async def inspire():
+    """
+    随机生成一条用户出门心情描述，供首页「AI 帮我想一个」按钮使用。
+    高 temperature LLM 生成，失败时返回随机内置模板。
+    """
+    fallback_prompts = [
+        "骑车20分钟内，找个安静能坐一下午的地方",
+        "下班了不想回家，想去个有点意思的地方待会",
+        "约了朋友出来，不知道去哪，预算不高",
+        "想找个有水或者有树的地方，安静走走",
+        "今天突然想去没去过的地方随便逛逛",
+        "一个人，步行能到，不要太吵的地方就行",
+        "骑车半小时内，有点新鲜感，最好不用花钱",
+        "驾车去个稍微远点的地方，喘口气",
+    ]
+    try:
+        text = await llm.generate_inspire()
+        return {"code": "OK", "data": {"prompt": text.strip()}}
+    except Exception:
+        return {"code": "OK", "data": {"prompt": random.choice(fallback_prompts)}}
+
+
 @router.get("/map/preview")
 async def map_preview(session_id: str, pick_id: str):
     """
@@ -922,12 +946,31 @@ async def persona_review(req: PersonaReq, request: Request):
         result = {"review": p["review"], "risk": p["risk"], "conclusion": p["conclusion"]}
         fallback_used = True
 
+    if fallback_used:
+        return {
+            "code": "OK",
+            "data": {
+                "persona":      req.persona,
+                "summary":      result.get("review", ""),
+                "slices":       [],
+                # 向后兼容字段
+                "review":       result.get("review", ""),
+                "risk":         result.get("risk"),
+                "conclusion":   result.get("conclusion", ""),
+                "fallback_used": fallback_used,
+            },
+        }
     return {
         "code": "OK",
         "data": {
-            "persona":    req.persona,
-            **result,
-            "fallback_used": fallback_used,
+            "persona":      req.persona,
+            "summary":      result.get("summary", result.get("review", "")),
+            "slices":       result.get("slices", []),
+            # 向后兼容字段
+            "review":       result.get("review", ""),
+            "risk":         result.get("risk"),
+            "conclusion":   result.get("conclusion", ""),
+            "fallback_used": False,
         },
     }
 
