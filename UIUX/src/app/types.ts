@@ -16,11 +16,20 @@ export interface HistoryItem {
   satisfaction?: 'good' | 'neutral' | 'bad';
 }
 
+export interface PersonaSlice {
+  scene: 'to_door' | 'enter' | 'during' | 'leave';
+  tag: string;
+  text: string;
+  emotion: string;
+}
+
 export interface PersonaReview {
   persona: string;
   review: string;
   risk: string;
   conclusion: string;
+  summary: string;
+  slices: PersonaSlice[];
 }
 
 export interface DecisionRequest {

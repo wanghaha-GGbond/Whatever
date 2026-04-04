@@ -166,7 +166,7 @@ export const api = {
   },
 
   personaReview(sessionId: string, pickId: string, persona: string) {
-    return request<{ code: string; data: { persona: string; review: string; risk: string; conclusion: string; fallback_used: boolean } }>(
+    return request<{ code: string; data: { persona: string; review: string; risk: string; conclusion: string; summary: string; slices: import('../types').PersonaSlice[]; fallback_used: boolean } }>(
       '/persona/review',
       {
         method: 'POST',
@@ -199,6 +199,10 @@ export const api = {
     return request<{ code: string; data: { list: HistoryItem[] } }>(
       `/history/list${qs}`,
     );
+  },
+
+  inspire() {
+    return request<{ code: string; data: { prompt: string } }>('/inspire');
   },
 
   getDashboardMetrics(days = 7) {
