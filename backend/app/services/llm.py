@@ -138,8 +138,20 @@ async def persona_review(
     user_prompt: str,
 ) -> dict:
     """
-    生成人格视角评价。
-    返回 {"review": str, "risk": str | None, "conclusion": str}
+    生成人格视角切片评价。
+    返回 {
+        "summary": str,           # 一句话结论 ≤20字，供分享卡片用
+        "slices": [               # 4个场景切片
+            {"scene": "to_door",  "tag": "到门口", "text": str, "emotion": str},
+            {"scene": "enter",    "tag": "进入后", "text": str, "emotion": str},
+            {"scene": "during",   "tag": "体验中", "text": str, "emotion": str},
+            {"scene": "leave",    "tag": "总结",   "text": str, "emotion": str},
+        ],
+        # 向后兼容字段（从 slices 派生）
+        "review": str,
+        "risk": str | None,
+        "conclusion": str,
+    }
     """
     p = PERSONA_CHARS.get(persona)
     if isinstance(p, dict):
@@ -151,6 +163,12 @@ async def persona_review(
         thinking = "你的第一反应是这个地方合不合适。"
         voice    = "说话直接，给出简短评价。"
 
+    scene_emoji = {
+        "公园": "🌳", "咖啡": "☕", "书店": "📚",
+        "博物馆": "🏛️", "餐厅": "🍽️", "商场": "🛍️",
+    }
+    enter_emoji = next((v for k, v in scene_emoji.items() if k in poi_type), "🚪")
+
     system = (
         f"你正在扮演「{persona}」。\n"
         f"{identity}\n"
@@ -161,17 +179,47 @@ async def persona_review(
     user = (
         f"用户说：「{user_prompt}」\n"
         f"他要去：{poi_name}（{poi_type}），{eta_min} 分钟路程，人均 {budget}。\n"
-        f"以「{persona}」的角度，用你特有的说话方式评价这个选择。\n"
-        '{{"review":"一句评价不超过25字","risk":"潜在风险不超过15字，无则null","conclusion":"不超过10字的结论"}}'
+        f"以「{persona}」的角度，用你特有的说话方式，生成 4 个场景切片评价。\n"
+        "每个切片 text ≤30字，emotion ≤6字（如：值得等、有点期待、不亏、随便看看）。\n"
+        "summary 是一句话结论 ≤20字，供分享用。\n"
+        '{"summary":"结论","slices":['
+        '{"scene":"to_door","tag":"到门口","text":"...","emotion":"..."},'
+        '{"scene":"enter","tag":"进入后","text":"...","emotion":"..."},'
+        '{"scene":"during","tag":"体验中","text":"...","emotion":"..."},'
+        '{"scene":"leave","tag":"总结","text":"...","emotion":"..."}'
+        ']}'
     )
-    raw = await _chat(system, user, max_tokens=250)
-    # 兼容 LLM 返回 markdown 代码块的情况
+    raw = await _chat(system, user, max_tokens=500)
     raw = raw.strip().removeprefix("```json").removeprefix("```").removesuffix("```").strip()
     data = json.loads(raw)
+
+    slices = data.get("slices", [])
+    summary = str(data.get("summary", ""))
+
+    # 补全缺失切片，防止 LLM 输出不完整
+    scene_defaults = [
+        ("to_door", "到门口"), ("enter", "进入后"),
+        ("during", "体验中"), ("leave", "总结"),
+    ]
+    slice_map = {s["scene"]: s for s in slices if isinstance(s, dict)}
+    normalized_slices = []
+    for scene_key, tag in scene_defaults:
+        s = slice_map.get(scene_key, {})
+        normalized_slices.append({
+            "scene":   scene_key,
+            "tag":     s.get("tag", tag),
+            "text":    str(s.get("text", "")),
+            "emotion": str(s.get("emotion", "")),
+        })
+
+    leave_slice = normalized_slices[3]
     return {
-        "review":     str(data.get("review", "")),
-        "risk":       data.get("risk") or None,
-        "conclusion": str(data.get("conclusion", "")),
+        "summary":    summary,
+        "slices":     normalized_slices,
+        # 向后兼容
+        "review":     summary,
+        "risk":       leave_slice["emotion"] or None,
+        "conclusion": leave_slice["text"],
     }
 
 
@@ -223,3 +271,21 @@ async def pick_reason(
         "命运说："
     )
     return await _chat(system, user, max_tokens=80, temperature=1.1)
+
+
+async def generate_inspire() -> str:
+    """
+    高 temperature 随机生成一条用户出门心情描述，供首页「AI 帮我想一个」按钮使用。
+    每次调用都应有不同结果。
+    """
+    system = (
+        "你是一个随机心情发生器。生成一句简短中文（15-30字），"
+        "模拟用户今天想出门的具体状态和偏好。"
+        "从以下维度随机选 1-2 个加入：通勤方式（步行/骑车/地铁/驾车）、"
+        "时间限制（N分钟内）、场景（一个人/约朋友/带娃）、"
+        "氛围（安静/热闹/有新鲜感/有水有绿）、预算。"
+        "语言要口语化有生活气息，直接描述状态，不要开头说「想去」「我想」，"
+        "禁止重复示例，每次都要不同。"
+    )
+    user = "随机生成一条。只输出那句话，不加引号，不加其他文字。"
+    return await _chat(system, user, max_tokens=60, temperature=1.4)
