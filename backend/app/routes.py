@@ -906,6 +906,7 @@ class PersonaReq(BaseModel):
     session_id: str
     pick_id: str
     persona: str
+    celebrity: str | None = None
 
 
 @router.post("/persona/review")
@@ -932,16 +933,25 @@ async def persona_review(req: PersonaReq, request: Request):
     # LLM 生成人格评价，失败降级模板
     fallback_used = False
     try:
-        result = await llm.persona_review(
-            poi_name=picked["name"],
-            poi_type=picked["type"],
-            eta_min=picked["eta_min"],
-            budget=picked["budget_text"],
-            persona=req.persona,
-            user_prompt=session_data.get("prompt", ""),
-        )
+        if req.celebrity:
+            result = await llm.celebrity_persona_review(
+                poi_name=picked["name"],
+                poi_type=picked["type"],
+                eta_min=picked["eta_min"],
+                budget=picked["budget_text"],
+                celebrity_id=req.celebrity,
+            )
+        else:
+            result = await llm.persona_review(
+                poi_name=picked["name"],
+                poi_type=picked["type"],
+                eta_min=picked["eta_min"],
+                budget=picked["budget_text"],
+                persona=req.persona,
+                user_prompt=session_data.get("prompt", ""),
+            )
     except Exception as exc:
-        logger.warning("LLM persona_review 失败，降级模板: %s", exc)
+        logger.warning("LLM persona/celebrity_review 失败，降级模板: %s", exc)
         p = PERSONA.get(req.persona, PERSONA["独处型"])
         result = {"review": p["review"], "risk": p["risk"], "conclusion": p["conclusion"]}
         fallback_used = True
