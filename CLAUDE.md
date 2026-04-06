@@ -46,8 +46,8 @@ Normal dev: run backend on terminal 1, frontend on terminal 2. Browse at http://
 
 **Frontend structure (`UIUX/src/`):**
 - React 18 + React Router 7 + Tailwind 4 + Radix UI + MUI
-- `app/App.tsx` — router root
-- `app/routes/` — page components
+- `app/App.tsx` + `app/routes.tsx` — router root and route definitions
+- `app/pages/` — page components (home, candidates, result, feedback, history, dashboard)
 - `app/components/` — reusable UI: `candidate-card`, `persona-tabs`, `location-bar`, etc.
 - Vite proxies `/api` to backend in dev; configure `vite.config.ts` for production base URL
 
@@ -59,19 +59,27 @@ Normal dev: run backend on terminal 1, frontend on terminal 2. Browse at http://
 - ±8% random noise for variety
 - Weighted random pick (not deterministic top-1)
 
-**Fallback strategy:** every endpoint degrades gracefully — Amap failure → mock candidate pool; template personas instead of LLM.
+**LLM integration:** `services/llm.py` calls DeepSeek API (OpenAI-compatible) for pick reasons and persona reviews. Requires `DEEPSEEK_API_KEY`. Falls back to default copy / template personas on failure — never blocks the user flow.
 
 ## Key Config
 
-- `backend/.env` — `AMAP_KEY=<your-key>` (see `.env.example`)
+- `backend/.env` — required: `AMAP_KEY`, `DEEPSEEK_API_KEY`; see `.env.example` for full list
+- Production DB: `DATABASE_URL` (PostgreSQL on Render); local dev: SQLite at `DB_PATH` (default `/tmp/p003.db`)
 - `.claude/settings.local.json` — allows `Bash(npm run:*)`
 - Vite proxy in `vite.config.ts`: `/api` → `http://localhost:8000`
+- `configs/ranking-config.json` — scoring weights (edit here, not in `routes.py`)
 
 ## Standard Response Envelope
 
 ```json
 { "code": "OK|INVALID_PARAMS|UPSTREAM_TIMEOUT|...", "message": "...", "data": {}, "fallback_used": false }
 ```
+
+## Deployment
+
+- **Backend → Render** (`render.yaml`): `uvicorn app.main:app --host 0.0.0.0 --port $PORT`
+- **Frontend → Vercel** (`vercel.json`): builds `UIUX/`, rewrites all routes to `index.html`
+- Health check: `GET /health` (used by Render)
 
 ## Debug / Testing
 

@@ -40,18 +40,24 @@ KEYWORD_INTENT_RULES = [
 TRANSPORT_SPEED = {
     "walk":   83,   # m/min (约5km/h)
     "bike":   250,  # m/min (约15km/h)
+    "ebike":  350,  # m/min (约21km/h，电动车)
+    "car":    600,  # m/min (约36km/h，驾车含停车)
     "subway": 500,  # m/min (地铁+步行综合)
 }
 
 TRANSPORT_DEFAULT_RADIUS = {
     "walk":   1500,
     "bike":   4000,
+    "ebike":  6000,
+    "car":    12000,
     "subway": 8000,
 }
 
 TRANSPORT_LABEL = {
-    "walk": "步行",
-    "bike": "骑车",
+    "walk":   "步行",
+    "bike":   "骑车",
+    "ebike":  "电动车",
+    "car":    "驾车",
     "subway": "地铁",
 }
 
@@ -85,13 +91,17 @@ def parse_intent(prompt: str) -> dict:
     """
     text = prompt.lower()
 
-    # 1. 通勤方式
+    # 1. 通勤方式（从最具体到最通用依次匹配）
     transport = "bike"  # 默认骑车
     if re.search(r"步行|走路|走过去|11路", text):
         transport = "walk"
-    elif re.search(r"地铁|公交|坐车|开车|打车|taxi", text):
+    elif re.search(r"驾车|开车|打车|taxi|自驾|停车", text):
+        transport = "car"
+    elif re.search(r"电动车|电动自行车|电瓶车|小电驴", text):
+        transport = "ebike"
+    elif re.search(r"地铁|公交|坐车", text):
         transport = "subway"
-    elif re.search(r"骑车|骑行|自行车|电动|单车", text):
+    elif re.search(r"骑车|骑行|自行车|单车|电动", text):
         transport = "bike"
 
     # 2. 搜索半径（优先从时间推算，其次用通勤默认值）

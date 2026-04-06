@@ -1,7 +1,7 @@
 {
   "_comment": "POI 评分权重，调整即可改变推荐倾向，无需改代码。",
   "weights": {
-    "distance": 0.40,
+    "distance": 0.25,
     "rating":   0.15,
     "match":    0.20,
     "novelty":  0.05,

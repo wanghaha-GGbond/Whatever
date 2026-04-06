@@ -79,7 +79,7 @@ function LaunchingOverlay() {
               className="rounded-full bg-gradient-to-r from-emerald-500 to-teal-500 text-white px-10 py-4 font-medium text-base inline-flex items-center gap-2"
             >
               <Loader2 className="w-5 h-5 animate-spin" />
-              AI 选址中...
+              命运翻牌中…
             </motion.div>
           </motion.div>
 
@@ -201,11 +201,16 @@ export function Candidates() {
       return;
     }
 
-    // 非 mock 场景下，不在本页阻塞等待 AI，直接进入结果页展示过渡动画
-    sessionStore.setPickId('');
-    sessionStore.setPicked({});
-    await new Promise((resolve) => setTimeout(resolve, 260));
-    navigate('/result');
+    // 在本页等待 pick API，result 页拿到数据后直接开始抽卡动画
+    try {
+      const res = await api.pick(sessionId);
+      sessionStore.setPicked(res.data.picked);
+      sessionStore.setPickId(res.data.pick_id);
+      navigate('/result');
+    } catch {
+      setLaunching(false);
+      setDrawError('抽签失败，请重试。');
+    }
   };
 
   const availableTypes = useMemo(() => {

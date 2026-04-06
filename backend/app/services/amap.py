@@ -93,7 +93,7 @@ async def search_around(
         f"&offset={limit}"
         f"&page=1"
         f"&extensions=base"
-        f"&sortrule=distance"
+        f"&sortrule=weight"
     )
     if keywords.strip():
         qs += f"&keywords={quote_plus(keywords.strip())}"

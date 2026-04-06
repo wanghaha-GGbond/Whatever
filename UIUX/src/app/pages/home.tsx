@@ -3,7 +3,7 @@ import { useNavigate } from 'react-router';
 import { LocationBar } from '../components/location-bar';
 import { ChipGroup } from '../components/chip-group';
 import { PrimaryButton } from '../components/primary-button';
-import { Mic, Loader2, RotateCw, MapPin } from 'lucide-react';
+import { Mic, Loader2, RotateCw, MapPin, Wand2 } from 'lucide-react';
 import { ApiError, api, HistoryItem } from '../lib/api';
 import { sessionStore } from '../lib/session';
 import { track } from '../lib/analytics';
@@ -30,6 +30,7 @@ export function Home() {
   const [prompt, setPrompt] = useState('');
   const [loading, setLoading] = useState(false);
   const [voiceToast, setVoiceToast] = useState(false);
+  const [inspireLoading, setInspireLoading] = useState(false);
   const [locStatus, setLocStatus] = useState<'idle' | 'ok' | 'denied'>('idle');
   const [addressName, setAddressName] = useState('');
   const [manualLocation, setManualLocation] = useState('');
@@ -152,6 +153,18 @@ export function Home() {
     }
   };
 
+  const handleInspire = async () => {
+    setInspireLoading(true);
+    try {
+      const res = await api.inspire();
+      if (res.data.prompt) setPrompt(res.data.prompt);
+    } catch {
+      // 失败静默，用户自己填
+    } finally {
+      setInspireLoading(false);
+    }
+  };
+
   const handleVoice = () => {
     if (voiceToastTimer.current) clearTimeout(voiceToastTimer.current);
     setVoiceToast(true);
@@ -221,18 +234,32 @@ export function Home() {
           )}
         </div>
 
+        {/* AI 灵感按钮 */}
+        <div className="flex justify-end -mt-4">
+          <button
+            onClick={handleInspire}
+            disabled={inspireLoading}
+            className="flex items-center gap-1.5 text-xs text-[#6e6e73] hover:text-[#16a34a] transition-colors py-1 disabled:opacity-50"
+          >
+            {inspireLoading
+              ? <Loader2 className="w-3.5 h-3.5 animate-spin" />
+              : <Wand2 className="w-3.5 h-3.5" />}
+            {inspireLoading ? 'AI 思考中…' : 'AI 帮我想一个'}
+          </button>
+        </div>
+
         {/* 筛选区 */}
         <div className="space-y-4">
           <ChipGroup
-            label="场景"
+            label="和谁去"
             options={['独处', '约会', '朋友']}
             onSelectionChange={(v) => setScene(v as string)}
             customPlaceholder="补充描述，例如：带小孩、老人同行…"
             onCustomChange={setSceneCustom}
           />
           <ChipGroup
-            label="通勤"
-            options={['步行', '骑车', '地铁']}
+            label="怎么去"
+            options={['步行', '骑车', '电动车', '驾车', '地铁']}
             onSelectionChange={(v) => setTransport(v as string)}
             customPlaceholder="补充描述，例如：最多20分钟、不想爬坡…"
             onCustomChange={setTransportCustom}
@@ -249,7 +276,7 @@ export function Home() {
             />
           </div>
           <ChipGroup
-            label="氛围"
+            label="想要什么感觉"
             options={['安静', '热闹', '有新鲜感', '好看']}
             multiSelect
             onSelectionChange={(v) => setAtmosphere(v as string[])}

@@ -45,7 +45,7 @@ export function ChipGroup({ label, options, multiSelect = false, onSelectionChan
           </button>
         ))}
       </div>
-      {customPlaceholder !== undefined && (
+      {customPlaceholder !== undefined && selected.length > 0 && (
         <input
           type="text"
           placeholder={customPlaceholder}
