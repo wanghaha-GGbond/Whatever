@@ -6,6 +6,7 @@ import json
 import logging
 import os
 import random
+from pathlib import Path
 
 import httpx
 
@@ -102,6 +103,18 @@ NARRATIVE_ANGLES = [
     "像命运在平静解释自己的选择",
     "从这个地点今天最特别的一面说起",
 ]
+
+
+def _load_celebrity_skill(name: str) -> str:
+    """Load and return skill file content with YAML frontmatter stripped."""
+    skill_path = Path(__file__).parent.parent / "skills" / f"{name}.skill"
+    content = skill_path.read_text(encoding="utf-8")
+    # Strip YAML frontmatter (--- ... ---)
+    if content.startswith("---"):
+        end = content.find("\n---", 3)
+        if end != -1:
+            content = content[end + 4:].lstrip("\n")
+    return content
 
 
 async def _chat(system: str, user: str, max_tokens: int = 200, temperature: float = 0.9) -> str:
@@ -217,6 +230,65 @@ async def persona_review(
         "summary":    summary,
         "slices":     normalized_slices,
         # 向后兼容
+        "review":     summary,
+        "risk":       leave_slice["emotion"] or None,
+        "conclusion": leave_slice["text"],
+    }
+
+
+async def celebrity_persona_review(
+    *,
+    poi_name: str,
+    poi_type: str,
+    eta_min: int,
+    budget: str,
+    celebrity_id: str,
+) -> dict:
+    """
+    生成名人视角切片评价，使用 .skill 文件作为 system prompt。
+    返回与 persona_review() 相同的 dict 格式。
+    """
+    system = _load_celebrity_skill(celebrity_id)
+    user = (
+        f"你正在以自己的视角评价一个目的地，供用户决定今天是否前往。\n"
+        f"地点：{poi_name}（{poi_type}），约{eta_min}分钟路程，人均{budget}。\n"
+        "用你独特的语气、思维方式和判断标准，生成 4 个场景切片评价。\n"
+        "每个切片 text ≤30字，emotion ≤6字（情感词）。"
+        "summary ≤20字，是你的核心判断句。\n"
+        "严格输出 JSON，不加任何其他文字，不加代码块符号：\n"
+        '{"summary":"...","slices":['
+        '{"scene":"to_door","tag":"到门口","text":"...","emotion":"..."},'
+        '{"scene":"enter","tag":"进入后","text":"...","emotion":"..."},'
+        '{"scene":"during","tag":"体验中","text":"...","emotion":"..."},'
+        '{"scene":"leave","tag":"总结","text":"...","emotion":"..."}'
+        ']}'
+    )
+    raw = await _chat(system, user, max_tokens=600)
+    raw = raw.strip().removeprefix("```json").removeprefix("```").removesuffix("```").strip()
+    data = json.loads(raw)
+
+    slices = data.get("slices", [])
+    summary = str(data.get("summary", ""))
+
+    scene_defaults = [
+        ("to_door", "到门口"), ("enter", "进入后"),
+        ("during", "体验中"), ("leave", "总结"),
+    ]
+    slice_map = {s["scene"]: s for s in slices if isinstance(s, dict)}
+    normalized_slices = []
+    for scene_key, tag in scene_defaults:
+        s = slice_map.get(scene_key, {})
+        normalized_slices.append({
+            "scene":   scene_key,
+            "tag":     s.get("tag", tag),
+            "text":    str(s.get("text", "")),
+            "emotion": str(s.get("emotion", "")),
+        })
+
+    leave_slice = normalized_slices[3]
+    return {
+        "summary":    summary,
+        "slices":     normalized_slices,
         "review":     summary,
         "risk":       leave_slice["emotion"] or None,
         "conclusion": leave_slice["text"],
