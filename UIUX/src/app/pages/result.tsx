@@ -471,7 +471,6 @@ function ResultRevealTransition() {
 export function Result() {
   const navigate = useNavigate();
   const [isDrawing, setIsDrawing] = useState(true);
-  const [isRevealing, setIsRevealing] = useState(false);
   const [selectedPersona, setSelectedPersona] = useState('独处型');
   const [reviewCache, setReviewCache] = useState<Record<string, ReviewData>>({});
   const [reviewLoading, setReviewLoading] = useState(false);
@@ -485,7 +484,6 @@ export function Result() {
   const [pickedLoading, setPickedLoading] = useState(true);
   const [drawCards, setDrawCards] = useState<DrawCard[]>([]);
   const [settleIndex, setSettleIndex] = useState(0);
-  const revealTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const review = reviewCache[selectedPersona] ?? null;
 
   const { share, sharing } = useShareCard();
@@ -640,9 +638,6 @@ export function Result() {
     };
 
     loadPicked();
-    return () => {
-      if (revealTimerRef.current) clearTimeout(revealTimerRef.current);
-    };
   }, [navigate]);
 
   // 当抽卡结束、选中人格变化时，加载当前人格 review
@@ -675,25 +670,14 @@ export function Result() {
   };
 
   if (isDrawing) {
-    if (pickedLoading) {
-      return <ThinkingBridge />;
-    }
+    if (pickedLoading) return null;
     return (
       <DrawingAnimation
         cards={drawCards}
         settleIndex={settleIndex}
-        onDone={() => {
-          setIsDrawing(false);
-          setIsRevealing(true);
-          if (revealTimerRef.current) clearTimeout(revealTimerRef.current);
-          revealTimerRef.current = setTimeout(() => setIsRevealing(false), 520);
-        }}
+        onDone={() => setIsDrawing(false)}
       />
     );
-  }
-
-  if (isRevealing) {
-    return <ResultRevealTransition />;
   }
 
   return (
