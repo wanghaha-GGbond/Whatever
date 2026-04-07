@@ -639,9 +639,9 @@ export function Result() {
     };
   }, [navigate]);
 
-  // 当抽卡结束、选中人格变化时，加载当前人格 review
+  // 当抽卡结束、选中人格变化时，加载当前人格 review（celebrity:* 由 handleCelebrityClick 自行加载，跳过）
   useEffect(() => {
-    if (!isDrawing) {
+    if (!isDrawing && !selectedPersona.startsWith('celebrity:')) {
       loadPersonaReview(selectedPersona);
     }
   }, [selectedPersona, isDrawing, loadPersonaReview]);

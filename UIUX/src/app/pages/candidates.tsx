@@ -62,6 +62,63 @@ function SkeletonCard() {
   );
 }
 
+function ScanningAnimation() {
+  const steps = [
+    'AI 正在定位你附近的地点…',
+    '正在根据偏好打分筛选…',
+    '整理今日最佳候选…',
+  ];
+  const [step, setStep] = useState(0);
+
+  useEffect(() => {
+    const t = setInterval(() => setStep((s) => (s + 1) % steps.length), 1100);
+    return () => clearInterval(t);
+  }, []);
+
+  return (
+    <div className="min-h-[60vh] flex flex-col items-center justify-center gap-8 px-5">
+      {/* 雷达圆圈 */}
+      <div className="relative flex items-center justify-center w-24 h-24">
+        {[0, 1, 2].map((i) => (
+          <motion.div
+            key={i}
+            className="absolute rounded-full border border-emerald-400/40"
+            initial={{ width: 32, height: 32, opacity: 0.7 }}
+            animate={{ width: 96, height: 96, opacity: 0 }}
+            transition={{ duration: 1.8, repeat: Infinity, delay: i * 0.6, ease: 'easeOut' }}
+          />
+        ))}
+        <div className="w-10 h-10 rounded-full bg-gradient-to-br from-emerald-400 to-teal-500 flex items-center justify-center shadow-[0_4px_16px_rgba(16,185,129,0.35)]">
+          <span className="text-white text-lg">📍</span>
+        </div>
+      </div>
+
+      {/* 步骤文字 */}
+      <AnimatePresence mode="wait">
+        <motion.p
+          key={step}
+          initial={{ opacity: 0, y: 8 }}
+          animate={{ opacity: 1, y: 0 }}
+          exit={{ opacity: 0, y: -8 }}
+          transition={{ duration: 0.2 }}
+          className="text-sm text-slate-600 text-center"
+        >
+          {steps[step]}
+        </motion.p>
+      </AnimatePresence>
+
+      {/* 进度条 */}
+      <div className="w-48 h-1.5 rounded-full bg-slate-100 overflow-hidden">
+        <motion.div
+          className="h-full bg-gradient-to-r from-emerald-400 to-teal-400 rounded-full"
+          animate={{ x: ['-100%', '100%'] }}
+          transition={{ duration: 1.4, repeat: Infinity, ease: 'linear' }}
+        />
+      </div>
+    </div>
+  );
+}
+
 function LaunchingOverlay() {
   return (
     <div className="fixed inset-0 z-50 bg-[#f0fdf4]">
@@ -349,17 +406,13 @@ export function Candidates() {
         )}
 
         {/* 候选卡片列表 */}
-        <div className="space-y-4">
-          {loading ? (
-            <>
-              <SkeletonCard />
-              <SkeletonCard />
-              <SkeletonCard />
-            </>
-          ) : (
-            places.map((place) => <CandidateCard key={place.id} place={place} />)
-          )}
-        </div>
+        {loading ? (
+          <ScanningAnimation />
+        ) : (
+          <div className="space-y-4">
+            {places.map((place) => <CandidateCard key={place.id} place={place} />)}
+          </div>
+        )}
       </div>
 
       {/* CTA 固定底部 */}
