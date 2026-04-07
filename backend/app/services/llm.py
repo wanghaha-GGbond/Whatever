@@ -252,29 +252,32 @@ async def celebrity_persona_review(
     user = (
         f"以你自己的身份和视角，评价这个目的地，帮用户决定今天是否值得去。\n"
         f"地点：{poi_name}（{poi_type}），约{eta_min}分钟路程，人均{budget}。\n\n"
-        "生成 4 个场景切片 + 1 条核心判断。\n\n"
+        "生成：1条核心判断 + 1段深度点评 + 4个场景切片。\n\n"
         "风格要求（必须遵守）：\n"
-        "- 用第一人称「我」，直接说，不解释「乔布斯会认为」\n"
-        "- 二元判断体系：要么 insanely great，要么 shit，没有中间地带\n"
-        "- 可以中英文混用，Jobs 的口头禅和高频词要自然出现\n"
-        "- text 字段：一句有力的判断或感受，≤40字，要有他的语气\n"
-        "- emotion 字段：1-3个词，他在这个瞬间的情绪，可以是英文\n"
-        "- summary 字段：他对这个地方最核心的一句话定论，≤30字\n"
+        "- 用第一人称「我」，直接说，不要说「乔布斯会认为」\n"
+        "- 二元判断：要么 insanely great，要么 shit，没有中间地带\n"
+        "- 中英文自然混用，他的口头禅和标志性词汇要出现\n"
+        "- summary：最核心的一句话定论，≤30字\n"
+        "- review：用他的思维框架深度分析这个地方，2-3句，80-120字，"
+        "要体现他的某个心智模型（聚焦/端到端/人文与技术的交汇等），有观点有温度\n"
+        "- text 字段：一句有力的判断，≤40字\n"
+        "- emotion 字段：1-3个词，可以是英文\n"
         "- tag 字段保持中文：到门口 / 进入后 / 体验中 / 总结\n\n"
         "JSON输出，不加任何其他文字和代码块符号：\n"
-        '{"summary":"...","slices":['
+        '{"summary":"...","review":"...","slices":['
         '{"scene":"to_door","tag":"到门口","text":"...","emotion":"..."},'
         '{"scene":"enter","tag":"进入后","text":"...","emotion":"..."},'
         '{"scene":"during","tag":"体验中","text":"...","emotion":"..."},'
         '{"scene":"leave","tag":"总结","text":"...","emotion":"..."}'
         ']}'
     )
-    raw = await _chat(system, user, max_tokens=900)
+    raw = await _chat(system, user, max_tokens=1200)
     raw = raw.strip().removeprefix("```json").removeprefix("```").removesuffix("```").strip()
     data = json.loads(raw)
 
     slices = data.get("slices", [])
     summary = str(data.get("summary", ""))
+    review_text = str(data.get("review", summary))
 
     scene_defaults = [
         ("to_door", "到门口"), ("enter", "进入后"),
@@ -295,7 +298,7 @@ async def celebrity_persona_review(
     return {
         "summary":    summary,
         "slices":     normalized_slices,
-        "review":     summary,
+        "review":     review_text,
         "risk":       leave_slice["emotion"] or None,
         "conclusion": leave_slice["text"],
     }

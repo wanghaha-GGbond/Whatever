@@ -471,6 +471,8 @@ function ResultRevealTransition() {
 export function Result() {
   const navigate = useNavigate();
   const [isDrawing, setIsDrawing] = useState(true);
+  const [isRevealing, setIsRevealing] = useState(false);
+  const revealTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [selectedPersona, setSelectedPersona] = useState('独处型');
   const [reviewCache, setReviewCache] = useState<Record<string, ReviewData>>({});
   const [reviewLoading, setReviewLoading] = useState(false);
@@ -638,6 +640,7 @@ export function Result() {
     };
 
     loadPicked();
+    return () => { if (revealTimerRef.current) clearTimeout(revealTimerRef.current); };
   }, [navigate]);
 
   // 当抽卡结束、选中人格变化时，加载当前人格 review
@@ -675,10 +678,17 @@ export function Result() {
       <DrawingAnimation
         cards={drawCards}
         settleIndex={settleIndex}
-        onDone={() => setIsDrawing(false)}
+        onDone={() => {
+          setIsDrawing(false);
+          setIsRevealing(true);
+          if (revealTimerRef.current) clearTimeout(revealTimerRef.current);
+          revealTimerRef.current = setTimeout(() => setIsRevealing(false), 520);
+        }}
       />
     );
   }
+
+  if (isRevealing) return <ResultRevealTransition />;
 
   return (
     <div className="min-h-screen bg-[radial-gradient(circle_at_top,#fefce8_0%,#ecfdf5_42%,#dcfce7_100%)]">
@@ -827,22 +837,30 @@ export function Result() {
                   const cr = reviewCache[`celebrity:${selectedCelebrity}`];
                   if (!cr) return null;
                   return (
-                    <div className="space-y-3">
+                    <div className="space-y-4">
+                      {/* 核心定论 */}
                       {cr.summary && (
-                        <p className="text-sm text-white/70 italic leading-relaxed border-l-2 border-amber-400/50 pl-3">
+                        <p className="text-sm text-white/80 italic leading-relaxed border-l-2 border-amber-400/60 pl-3">
                           "{cr.summary}"
                         </p>
                       )}
+                      {/* 深度点评段落 */}
+                      {cr.review && cr.review !== cr.summary && (
+                        <p className="text-[13px] text-white/60 leading-relaxed">
+                          {cr.review}
+                        </p>
+                      )}
+                      {/* 4 场景切片 */}
                       <div className="flex gap-2.5 overflow-x-auto pb-1 scrollbar-hide">
                         {cr.slices.map((slice) => (
                           <div
                             key={slice.scene}
-                            className="flex-shrink-0 w-[148px] rounded-2xl bg-white/6 border border-white/8 p-3 space-y-1.5"
+                            className="flex-shrink-0 w-[156px] rounded-2xl bg-white/6 border border-white/8 p-3.5 space-y-2"
                           >
-                            <div className="text-[10px] text-amber-400/70 font-medium tracking-wide">{slice.tag}</div>
+                            <div className="text-[10px] text-amber-400/70 font-medium tracking-wide uppercase">{slice.tag}</div>
                             <p className="text-[12px] text-white/85 leading-snug">{slice.text}</p>
                             {slice.emotion && (
-                              <div className="text-[10px] text-white/40">{slice.emotion}</div>
+                              <div className="text-[11px] text-white/35 italic">{slice.emotion}</div>
                             )}
                           </div>
                         ))}
