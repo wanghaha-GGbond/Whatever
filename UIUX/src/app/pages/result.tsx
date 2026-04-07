@@ -3,6 +3,10 @@ import { Navigation, RotateCw, MessageSquarePlus, Sparkles, MapPin, Loader2 } fr
 import { PersonaTabs } from '../components/persona-tabs';
 import { PersonaSliceView } from '../components/persona-slice-view';
 import { ShareCardNode } from '../components/share-card-node';
+import { CELEBRITIES } from '../lib/celebrities';
+import { isPro } from '../lib/pro';
+import { CelebrityPersonaCard } from '../components/celebrity-persona-card';
+import { ProGateSheet } from '../components/pro-gate-sheet';
 import { PrimaryButton } from '../components/primary-button';
 import { motion, AnimatePresence } from 'motion/react';
 import { api } from '../lib/api';
@@ -472,6 +476,7 @@ export function Result() {
   const [reviewCache, setReviewCache] = useState<Record<string, ReviewData>>({});
   const [reviewLoading, setReviewLoading] = useState(false);
   const [reviewError, setReviewError] = useState('');
+  const [proGateOpen, setProGateOpen] = useState(false);
   const [pageError, setPageError] = useState('');
   const [picked, setPicked] = useState<PickedPlace | null>(null);
   const [pickedLoading, setPickedLoading] = useState(true);
@@ -493,6 +498,34 @@ export function Result() {
     setSelectedPersona(persona);
     track('persona_tab_clicked', { persona }, sessionStore.getSessionId(), sessionStore.getDeviceId());
   };
+
+  const handleCelebrityClick = useCallback(async (celebrity: typeof CELEBRITIES[0]) => {
+    if (!isPro()) {
+      setProGateOpen(true);
+      return;
+    }
+    const sessionId = sessionStore.getSessionId();
+    const pickId = sessionStore.getPickId();
+    if (!sessionId || !pickId) return;
+
+    const cacheKey = celebrity.name;
+    if (reviewCache[cacheKey]) {
+      setSelectedPersona(cacheKey);
+      return;
+    }
+
+    setSelectedPersona(cacheKey);
+    setReviewLoading(true);
+    setReviewError('');
+    try {
+      const reviewRes = await api.personaReview(sessionId, pickId, celebrity.name, celebrity.id);
+      setReviewCache((prev) => ({ ...prev, [cacheKey]: reviewRes.data }));
+    } catch {
+      setReviewError('名人视角加载失败，请稍后重试。');
+    } finally {
+      setReviewLoading(false);
+    }
+  }, [reviewCache]);
 
   const loadPersonaReview = useCallback(async (persona: string, showLoading = true) => {
     const sessionId = sessionStore.getSessionId();
@@ -742,6 +775,28 @@ export function Result() {
             <h3 className="font-semibold text-[#1d1d1f]">人格试玩</h3>
             <span className="text-xs text-[#6e6e73]">选一个，调用 AI 评估这同一个地点</span>
           </div>
+          {/* 名人视角行 */}
+          <div className="space-y-2">
+            <div className="flex items-center gap-2">
+              <span className="text-xs font-medium text-amber-700">★ 名人视角</span>
+              <span className="text-[10px] bg-amber-100 text-amber-700 px-1.5 py-0.5 rounded-full font-medium">PRO</span>
+            </div>
+            <div className="flex gap-2.5 overflow-x-auto pb-1 scrollbar-hide">
+              {CELEBRITIES.map((celebrity) => (
+                <CelebrityPersonaCard
+                  key={celebrity.id}
+                  celebrity={celebrity}
+                  selected={selectedPersona === celebrity.name}
+                  unlocked={isPro()}
+                  onClick={() => handleCelebrityClick(celebrity)}
+                />
+              ))}
+              <div className="flex-shrink-0 flex items-center justify-center min-w-[80px] h-[76px] rounded-2xl border border-dashed border-slate-300 text-[10px] text-slate-400 px-2 text-center">
+                🔜<br />更多即将<br />上线
+              </div>
+            </div>
+          </div>
+
           <PersonaTabs personas={personas} defaultPersona={selectedPersona} onPersonaChange={handlePersonaChange} />
 
           <div className="min-h-[140px]">
@@ -837,6 +892,7 @@ export function Result() {
           personaSummary2={shareReview2?.summary ?? shareReview2?.review ?? ''}
         />
       )}
+      <ProGateSheet open={proGateOpen} onClose={() => setProGateOpen(false)} />
     </div>
   );
 }
