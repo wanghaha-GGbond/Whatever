@@ -508,7 +508,7 @@ export function Result() {
     const pickId = sessionStore.getPickId();
     if (!sessionId || !pickId) return;
 
-    const cacheKey = celebrity.name;
+    const cacheKey = `celebrity:${celebrity.id}`;
     if (reviewCache[cacheKey]) {
       setSelectedPersona(cacheKey);
       return;
@@ -786,7 +786,7 @@ export function Result() {
                 <CelebrityPersonaCard
                   key={celebrity.id}
                   celebrity={celebrity}
-                  selected={selectedPersona === celebrity.name}
+                  selected={selectedPersona === `celebrity:${celebrity.id}`}
                   unlocked={isPro()}
                   onClick={() => handleCelebrityClick(celebrity)}
                 />
