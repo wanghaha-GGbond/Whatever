@@ -250,12 +250,18 @@ async def celebrity_persona_review(
     """
     system = _load_celebrity_skill(celebrity_id)
     user = (
-        f"你正在以自己的视角评价一个目的地，供用户决定今天是否前往。\n"
-        f"地点：{poi_name}（{poi_type}），约{eta_min}分钟路程，人均{budget}。\n"
-        "用你独特的语气、思维方式和判断标准，生成 4 个场景切片评价。\n"
-        "每个切片 text ≤30字，emotion ≤6字（情感词）。"
-        "summary ≤20字，是你的核心判断句。\n"
-        "严格输出 JSON，不加任何其他文字，不加代码块符号：\n"
+        f"以你自己的身份和视角，评价这个目的地，帮用户决定今天是否值得去。\n"
+        f"地点：{poi_name}（{poi_type}），约{eta_min}分钟路程，人均{budget}。\n\n"
+        "生成 4 个场景切片 + 1 条核心判断。\n\n"
+        "风格要求（必须遵守）：\n"
+        "- 用第一人称「我」，直接说，不解释「乔布斯会认为」\n"
+        "- 二元判断体系：要么 insanely great，要么 shit，没有中间地带\n"
+        "- 可以中英文混用，Jobs 的口头禅和高频词要自然出现\n"
+        "- text 字段：一句有力的判断或感受，≤40字，要有他的语气\n"
+        "- emotion 字段：1-3个词，他在这个瞬间的情绪，可以是英文\n"
+        "- summary 字段：他对这个地方最核心的一句话定论，≤30字\n"
+        "- tag 字段保持中文：到门口 / 进入后 / 体验中 / 总结\n\n"
+        "JSON输出，不加任何其他文字和代码块符号：\n"
         '{"summary":"...","slices":['
         '{"scene":"to_door","tag":"到门口","text":"...","emotion":"..."},'
         '{"scene":"enter","tag":"进入后","text":"...","emotion":"..."},'
@@ -263,7 +269,7 @@ async def celebrity_persona_review(
         '{"scene":"leave","tag":"总结","text":"...","emotion":"..."}'
         ']}'
     )
-    raw = await _chat(system, user, max_tokens=600)
+    raw = await _chat(system, user, max_tokens=900)
     raw = raw.strip().removeprefix("```json").removeprefix("```").removesuffix("```").strip()
     data = json.loads(raw)
 
