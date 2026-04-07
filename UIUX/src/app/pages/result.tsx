@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
-import { Navigation, RotateCw, MessageSquarePlus, Sparkles, MapPin, Loader2 } from 'lucide-react';
+import { Navigation, RotateCw, MessageSquarePlus, Sparkles, MapPin, Loader2, X } from 'lucide-react';
 import { PersonaTabs } from '../components/persona-tabs';
 import { PersonaSliceView } from '../components/persona-slice-view';
 import { ShareCardNode } from '../components/share-card-node';
@@ -477,6 +477,9 @@ export function Result() {
   const [reviewLoading, setReviewLoading] = useState(false);
   const [reviewError, setReviewError] = useState('');
   const [proGateOpen, setProGateOpen] = useState(false);
+  const [selectedCelebrity, setSelectedCelebrity] = useState<string | null>(null);
+  const [celebLoading, setCelebLoading] = useState(false);
+  const [celebError, setCelebError] = useState('');
   const [pageError, setPageError] = useState('');
   const [picked, setPicked] = useState<PickedPlace | null>(null);
   const [pickedLoading, setPickedLoading] = useState(true);
@@ -504,28 +507,31 @@ export function Result() {
       setProGateOpen(true);
       return;
     }
+    // 再次点击同一个名人 → 收起
+    if (selectedCelebrity === celebrity.id) {
+      setSelectedCelebrity(null);
+      return;
+    }
+    setSelectedCelebrity(celebrity.id);
+
+    const cacheKey = `celebrity:${celebrity.id}`;
+    if (reviewCache[cacheKey]) return; // 已有缓存，直接展示
+
     const sessionId = sessionStore.getSessionId();
     const pickId = sessionStore.getPickId();
     if (!sessionId || !pickId) return;
 
-    const cacheKey = `celebrity:${celebrity.id}`;
-    if (reviewCache[cacheKey]) {
-      setSelectedPersona(cacheKey);
-      return;
-    }
-
-    setSelectedPersona(cacheKey);
-    setReviewLoading(true);
-    setReviewError('');
+    setCelebLoading(true);
+    setCelebError('');
     try {
       const reviewRes = await api.personaReview(sessionId, pickId, celebrity.name, celebrity.id);
       setReviewCache((prev) => ({ ...prev, [cacheKey]: reviewRes.data }));
     } catch {
-      setReviewError('名人视角加载失败，请稍后重试。');
+      setCelebError('名人视角加载失败，请稍后重试。');
     } finally {
-      setReviewLoading(false);
+      setCelebLoading(false);
     }
-  }, [reviewCache]);
+  }, [selectedCelebrity, reviewCache]);
 
   const loadPersonaReview = useCallback(async (persona: string, showLoading = true) => {
     const sessionId = sessionStore.getSessionId();
@@ -639,9 +645,9 @@ export function Result() {
     };
   }, [navigate]);
 
-  // 当抽卡结束、选中人格变化时，加载当前人格 review（celebrity:* 由 handleCelebrityClick 自行加载，跳过）
+  // 当抽卡结束、选中人格变化时，加载当前人格 review
   useEffect(() => {
-    if (!isDrawing && !selectedPersona.startsWith('celebrity:')) {
+    if (!isDrawing) {
       loadPersonaReview(selectedPersona);
     }
   }, [selectedPersona, isDrawing, loadPersonaReview]);
@@ -765,38 +771,117 @@ export function Result() {
           </motion.div>
         )}
 
+        {/* ── 名人视角（PRO，独立区块）── */}
         <motion.div
           initial={{ opacity: 0, y: 20 }}
           animate={{ opacity: 1, y: 0 }}
-          transition={{ delay: 0.4 }}
+          transition={{ delay: 0.38 }}
+          className="space-y-3"
+        >
+          <div className="flex items-center gap-2">
+            <h3 className="font-semibold text-[#1d1d1f]">名人视角</h3>
+            <span className="text-[10px] bg-amber-400 text-white px-2 py-0.5 rounded-full font-semibold tracking-wide">PRO</span>
+          </div>
+          <div className="flex gap-2.5 overflow-x-auto pb-1 scrollbar-hide">
+            {CELEBRITIES.map((celebrity) => (
+              <CelebrityPersonaCard
+                key={celebrity.id}
+                celebrity={celebrity}
+                selected={selectedCelebrity === celebrity.id}
+                unlocked={isPro()}
+                onClick={() => handleCelebrityClick(celebrity)}
+              />
+            ))}
+            <div className="flex-shrink-0 flex items-center justify-center min-w-[80px] h-[76px] rounded-2xl border border-dashed border-slate-300/60 text-[10px] text-slate-400 px-2 text-center leading-tight">
+              🔜<br />更多<br />即将上线
+            </div>
+          </div>
+
+          {/* 名人评价面板 — 独立暗色卡片 */}
+          <AnimatePresence>
+            {selectedCelebrity && (
+              <motion.div
+                key={selectedCelebrity}
+                initial={{ opacity: 0, y: 10, scale: 0.98 }}
+                animate={{ opacity: 1, y: 0, scale: 1 }}
+                exit={{ opacity: 0, y: -6, scale: 0.97 }}
+                transition={{ duration: 0.24, ease: [0.22, 0.7, 0.24, 1] }}
+                className="rounded-3xl bg-gradient-to-br from-[#1c1c1e] via-[#2c2c2e] to-[#1a1a1c] p-5 space-y-4 shadow-[0_12px_40px_rgba(0,0,0,0.28)]"
+              >
+                {/* 名人标题行 */}
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-3">
+                    <span className="text-3xl">{CELEBRITIES.find(c => c.id === selectedCelebrity)?.emoji}</span>
+                    <div>
+                      <div className="text-base font-semibold text-white leading-tight">
+                        {CELEBRITIES.find(c => c.id === selectedCelebrity)?.nameEn}
+                      </div>
+                      <div className="text-[11px] text-amber-400/90 mt-0.5">★ PRO · 名人视角</div>
+                    </div>
+                  </div>
+                  <button
+                    onClick={() => setSelectedCelebrity(null)}
+                    className="text-white/30 hover:text-white/60 transition-colors p-1"
+                  >
+                    <X className="w-4 h-4" />
+                  </button>
+                </div>
+
+                {/* 内容区 */}
+                {celebLoading ? (
+                  <div className="space-y-2.5">
+                    <div className="h-4 rounded-xl bg-white/8 animate-pulse w-3/4" />
+                    <div className="flex gap-2.5">
+                      {[1, 2].map((i) => (
+                        <div key={i} className="flex-1 h-[100px] rounded-2xl bg-white/6 animate-pulse" />
+                      ))}
+                    </div>
+                  </div>
+                ) : celebError ? (
+                  <p className="text-sm text-red-400/90">{celebError}</p>
+                ) : (() => {
+                  const cr = reviewCache[`celebrity:${selectedCelebrity}`];
+                  if (!cr) return null;
+                  return (
+                    <div className="space-y-3">
+                      {cr.summary && (
+                        <p className="text-sm text-white/70 italic leading-relaxed border-l-2 border-amber-400/50 pl-3">
+                          "{cr.summary}"
+                        </p>
+                      )}
+                      <div className="flex gap-2.5 overflow-x-auto pb-1 scrollbar-hide">
+                        {cr.slices.map((slice) => (
+                          <div
+                            key={slice.scene}
+                            className="flex-shrink-0 w-[148px] rounded-2xl bg-white/6 border border-white/8 p-3 space-y-1.5"
+                          >
+                            <div className="text-[10px] text-amber-400/70 font-medium tracking-wide">{slice.tag}</div>
+                            <p className="text-[12px] text-white/85 leading-snug">{slice.text}</p>
+                            {slice.emotion && (
+                              <div className="text-[10px] text-white/40">{slice.emotion}</div>
+                            )}
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  );
+                })()}
+              </motion.div>
+            )}
+          </AnimatePresence>
+        </motion.div>
+
+        {/* ── 免费人格试玩（独立区块）── */}
+        <motion.div
+          initial={{ opacity: 0, y: 20 }}
+          animate={{ opacity: 1, y: 0 }}
+          transition={{ delay: 0.46 }}
           className="space-y-4"
         >
           <div className="flex items-baseline gap-2">
             <h3 className="font-semibold text-[#1d1d1f]">人格试玩</h3>
             <span className="text-xs text-[#6e6e73]">选一个，调用 AI 评估这同一个地点</span>
           </div>
-          {/* 名人视角行 */}
-          <div className="space-y-2">
-            <div className="flex items-center gap-2">
-              <span className="text-xs font-medium text-amber-700">★ 名人视角</span>
-              <span className="text-[10px] bg-amber-100 text-amber-700 px-1.5 py-0.5 rounded-full font-medium">PRO</span>
-            </div>
-            <div className="flex gap-2.5 overflow-x-auto pb-1 scrollbar-hide">
-              {CELEBRITIES.map((celebrity) => (
-                <CelebrityPersonaCard
-                  key={celebrity.id}
-                  celebrity={celebrity}
-                  selected={selectedPersona === `celebrity:${celebrity.id}`}
-                  unlocked={isPro()}
-                  onClick={() => handleCelebrityClick(celebrity)}
-                />
-              ))}
-              <div className="flex-shrink-0 flex items-center justify-center min-w-[80px] h-[76px] rounded-2xl border border-dashed border-slate-300 text-[10px] text-slate-400 px-2 text-center">
-                🔜<br />更多即将<br />上线
-              </div>
-            </div>
-          </div>
-
           <PersonaTabs personas={personas} defaultPersona={selectedPersona} onPersonaChange={handlePersonaChange} />
 
           <div className="min-h-[140px]">
