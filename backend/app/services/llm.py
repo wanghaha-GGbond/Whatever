@@ -260,11 +260,13 @@ async def celebrity_persona_review(
         "- summary：最核心的一句话定论，≤30字\n"
         "- review：用他的思维框架深度分析这个地方，2-3句，80-120字，"
         "要体现他的某个心智模型（聚焦/端到端/人文与技术的交汇等），有观点有温度\n"
+        "- verdict：最后一句拍板辣评，≤25字，用「我」，"
+        "带他最锋利的一面——可以骂、可以封神，绝不中庸，像舞台上最后一句话\n"
         "- text 字段：一句有力的判断，≤40字\n"
         "- emotion 字段：1-3个词，可以是英文\n"
         "- tag 字段保持中文：到门口 / 进入后 / 体验中 / 总结\n\n"
         "JSON输出，不加任何其他文字和代码块符号：\n"
-        '{"summary":"...","review":"...","slices":['
+        '{"summary":"...","review":"...","verdict":"...","slices":['
         '{"scene":"to_door","tag":"到门口","text":"...","emotion":"..."},'
         '{"scene":"enter","tag":"进入后","text":"...","emotion":"..."},'
         '{"scene":"during","tag":"体验中","text":"...","emotion":"..."},'
@@ -278,6 +280,7 @@ async def celebrity_persona_review(
     slices = data.get("slices", [])
     summary = str(data.get("summary", ""))
     review_text = str(data.get("review", summary))
+    verdict_text = str(data.get("verdict", ""))
 
     scene_defaults = [
         ("to_door", "到门口"), ("enter", "进入后"),
@@ -299,6 +302,7 @@ async def celebrity_persona_review(
         "summary":    summary,
         "slices":     normalized_slices,
         "review":     review_text,
+        "verdict":    verdict_text,
         "risk":       leave_slice["emotion"] or None,
         "conclusion": leave_slice["text"],
     }
@@ -370,3 +374,233 @@ async def generate_inspire() -> str:
     )
     user = "随机生成一条。只输出那句话，不加引号，不加其他文字。"
     return await _chat(system, user, max_tokens=60, temperature=1.4)
+
+
+# ─── AI 版意图解析（使用 LLM 替代规则 NLU） ───────────────────────────────
+
+# 高德 POI 类型码映射表
+AMAP_CATEGORY_CODES = {
+    "公园": "110100|110101|110102|110103",
+    "咖啡": "050118|050000",
+    "书店": "060100|080703",
+    "博物馆": "080300|080301|080302",
+    "餐厅": "050000",
+    "商场": "060200|060201",
+    "户外": "110100|110200",
+    "健身": "090301|090302",
+    "酒吧": "050100",
+    "电影院": "120000",
+    "KTV": "050200",
+    "美发": "070200",
+}
+
+TRANSPORT_MODES = {
+    "步行": "walk",
+    "骑车": "bike",
+    "电动车": "ebike",
+    "地铁": "subway",
+    "驾车": "car",
+}
+
+TRANSPORT_DEFAULT_RADIUS = {
+    "walk": 1500,
+    "bike": 4000,
+    "ebike": 6000,
+    "subway": 8000,
+    "car": 12000,
+}
+
+
+async def parse_intent_with_ai(
+    prompt: str,
+    location: str | None = None,
+    time_context: dict | None = None,
+) -> dict:
+    """
+    使用 LLM 解析用户自然语言 prompt 为结构化搜索意图。支持时间上下文和多类型偏好。
+
+    返回结构：
+    {
+        "radius_m": int,
+        "poi_types": str,               # 高德类型码，"|" 分隔（多类型合并）
+        "keywords": str,                # 补充关键词搜索
+        "transport": str,               # walk/bike/subway/car/ebike
+        "budget_max": int | None,       # None = 不限
+        "open_now": bool,
+        "preferred_category": str,      # 主要意图类别（用于评分加权）
+        "type_weights": dict,           # {类别名: 权重} 供评分器使用
+        "llm_used": bool,
+    }
+
+    失败时抛异常，让调用方决定降级策略。
+    """
+    category_help = "\n".join([f"  - {k}" for k in AMAP_CATEGORY_CODES])
+
+    # 构建时间上下文注入
+    time_hint = ""
+    if time_context:
+        hour = time_context.get("hour")
+        weekday = time_context.get("weekday", "")
+        season = time_context.get("season", "")
+        weather = time_context.get("weather", "")
+        parts = []
+        if weekday:
+            parts.append(weekday)
+        if hour is not None:
+            if hour < 6:
+                parts.append("深夜")
+            elif hour < 11:
+                parts.append("上午")
+            elif hour < 14:
+                parts.append("午间")
+            elif hour < 18:
+                parts.append("下午")
+            elif hour < 21:
+                parts.append("傍晚")
+            else:
+                parts.append("晚上")
+        if season:
+            parts.append(f"{season}季")
+        if weather:
+            parts.append(weather)
+        if parts:
+            time_hint = f"\n【当前时间】{' '.join(parts)}。请根据此时间偏好选择合适的室内外场景。"
+
+    system = (
+        "你是地点搜索引擎的自然语言理解模块。\n"
+        "用户会用口语描述今天想去的地点类型、通勤方式、预算等需求。\n"
+        "你的任务是把这个需求结构化，返回 JSON。\n"
+        f"{time_hint}\n"
+        "【可用地点类型】\n"
+        f"{category_help}\n\n"
+        "【多类型规则】\n"
+        "用户意图模糊时（如「放松」「随便逛逛」「有氛围感的地方」），可选 1-3 个类型，\n"
+        "用 weight（0.1-1.0）表示偏好强度，主意图 weight=1.0，次选降权。\n"
+        "意图明确时（如「找奶茶」「去公园」），只选1个类型 weight=1.0。\n\n"
+        "【通勤方式】步行/骑车/电动车/地铁/驾车，未提及默认骑车。\n\n"
+        "【预算】「免费」→0，「20块」→20，未提及→null。\n\n"
+        "【关键词】特定品牌/口味写在 keywords（如「奶茶|喜茶」），通用心情词不写。\n\n"
+        "返回 JSON（不加代码块，不加其他文字）：\n"
+        '{"categories":[{"name":"类型名","weight":1.0}],'
+        '"transport":"通勤方式","time_min":分钟数或null,'
+        '"keywords":"品牌|口味","budget":数字或null}'
+    )
+
+    user = f"用户说：「{prompt}」"
+    if location:
+        user += f"\n当前位置：{location}"
+
+    raw = await _chat(system, user, max_tokens=250, temperature=0.3)
+    raw = raw.strip().removeprefix("```json").removeprefix("```").removesuffix("```").strip()
+    data = json.loads(raw)
+
+    # 解析多类型 categories（兼容旧格式单 category）
+    categories_raw = data.get("categories", [])
+    if not categories_raw and data.get("category"):
+        categories_raw = [{"name": data["category"], "weight": 1.0}]
+    if not categories_raw:
+        categories_raw = [{"name": "公园", "weight": 1.0}]
+
+    # 合并 poi_types 并建立 type_weights
+    seen_codes: set[str] = set()
+    all_codes: list[str] = []
+    type_weights: dict[str, float] = {}
+    preferred_category = ""
+
+    for entry in categories_raw:
+        name = str(entry.get("name", "")).strip()
+        weight = float(entry.get("weight", 1.0))
+        codes = AMAP_CATEGORY_CODES.get(name, "")
+        if codes:
+            for code in codes.split("|"):
+                code = code.strip()
+                if code and code not in seen_codes:
+                    seen_codes.add(code)
+                    all_codes.append(code)
+        if name:
+            type_weights[name] = weight
+            if not preferred_category or weight > type_weights.get(preferred_category, 0):
+                preferred_category = name
+
+    poi_types = "|".join(all_codes) if all_codes else "110100|050118|060100|080300"
+
+    # 通勤方式
+    transport = str(data.get("transport", "骑车")).strip()
+    transport_key = TRANSPORT_MODES.get(transport, "bike")
+
+    # 搜索半径
+    time_min = data.get("time_min")
+    radius_m = TRANSPORT_DEFAULT_RADIUS[transport_key]
+    if time_min and isinstance(time_min, (int, float)) and time_min > 0:
+        transport_speed = {"walk": 83, "bike": 250, "ebike": 350, "subway": 500, "car": 600}
+        speed = transport_speed.get(transport_key, 250)
+        radius_m = min(int(time_min * speed), 15000)
+
+    # 预算
+    budget = data.get("budget")
+    budget_max = None
+    if budget is not None:
+        try:
+            budget_max = int(budget)
+        except (TypeError, ValueError):
+            budget_max = None
+
+    keywords = str(data.get("keywords", "")).strip()
+
+    return {
+        "radius_m":           radius_m,
+        "poi_types":          poi_types,
+        "keywords":           keywords,
+        "transport":          transport_key,
+        "budget_max":         budget_max,
+        "open_now":           True,
+        "preferred_category": preferred_category,
+        "type_weights":       type_weights,
+        "must_keywords":      [k.strip() for k in keywords.split("|") if k.strip()],
+        "exclude_keywords":   [],
+        "llm_used":           True,
+    }
+
+
+async def generate_search_summary(
+    *,
+    prompt: str,
+    type_labels: list[str],
+    count: int,
+    time_context: dict | None = None,
+) -> str:
+    """
+    根据用户 prompt 和搜索结果，生成一句自然语言摘要，用于候选页面标题。
+    ≤25字，有温度，不模板化。失败时由调用方使用兜底文案。
+    """
+    time_hint = ""
+    if time_context:
+        hour = time_context.get("hour")
+        weekday = time_context.get("weekday", "")
+        parts = [weekday] if weekday else []
+        if hour is not None:
+            if hour < 11:
+                parts.append("上午")
+            elif hour < 14:
+                parts.append("午间")
+            elif hour < 18:
+                parts.append("下午")
+            elif hour < 21:
+                parts.append("傍晚")
+            else:
+                parts.append("晚上")
+        time_hint = "".join(parts)
+
+    type_str = "、".join(type_labels[:3]) if type_labels else "附近地点"
+    system = (
+        "你是一个简短的搜索摘要生成器。\n"
+        "根据用户原始诉求和找到的结果，写一句话（≤25字）摘要，像一个知心朋友在说话。\n"
+        "不要用「已为你」「推荐」「搜索完成」等机器感的词。\n"
+        "只输出这一句话，不加标点结尾。"
+    )
+    user = (
+        f"用户说：「{prompt}」\n"
+        f"找到了 {count} 个{type_str}"
+        + (f"，时间：{time_hint}" if time_hint else "")
+    )
+    return await _chat(system, user, max_tokens=60, temperature=0.8)

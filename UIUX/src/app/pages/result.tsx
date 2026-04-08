@@ -43,6 +43,7 @@ interface ReviewData {
   summary: string;
   slices: PersonaSlice[];
   review: string;
+  verdict?: string;
   risk: string | null;
   conclusion: string;
 }
@@ -865,6 +866,13 @@ export function Result() {
                           </div>
                         ))}
                       </div>
+                      {/* 辣评拍板 */}
+                      {cr.verdict && (
+                        <div className="mt-1 rounded-2xl bg-amber-400/10 border border-amber-400/25 px-4 py-3 flex items-start gap-2.5">
+                          <span className="text-base leading-none mt-0.5">🔥</span>
+                          <p className="text-[13px] text-amber-300 font-medium leading-snug">{cr.verdict}</p>
+                        </div>
+                      )}
                     </div>
                   );
                 })()}

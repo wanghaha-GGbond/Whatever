@@ -165,12 +165,12 @@ export const api = {
     );
   },
 
-  personaReview(sessionId: string, pickId: string, persona: string) {
+  personaReview(sessionId: string, pickId: string, persona: string, celebrity?: string) {
     return request<{ code: string; data: { persona: string; review: string; risk: string; conclusion: string; summary: string; slices: import('../types').PersonaSlice[]; fallback_used: boolean } }>(
       '/persona/review',
       {
         method: 'POST',
-        body: JSON.stringify({ session_id: sessionId, pick_id: pickId, persona }),
+        body: JSON.stringify({ session_id: sessionId, pick_id: pickId, persona, ...(celebrity ? { celebrity } : {}) }),
       },
     );
   },

@@ -308,10 +308,21 @@ def _score_poi(poi: dict, intent: dict, type_weights: dict | None = None) -> flo
 
     if type_weights:
         type_label = get_type_label(poi["type"])
-        tw = type_weights.get(type_label, 1.0)
-        score *= tw
-        if type_label not in type_weights:
+        # exact match first; fall back to partial (e.g. "咖啡" matches "咖啡厅")
+        tw = type_weights.get(type_label)
+        if tw is None:
+            tw = next((v for k, v in type_weights.items() if k in type_label or type_label in k), None)
+        if tw is not None:
+            score *= tw
+        else:
             score += w["novelty"]
+
+    # 主意图偏好加分（来自 LLM 解析的首选类型）
+    preferred_cat = intent.get("preferred_category", "")
+    if preferred_cat:
+        tl = get_type_label(poi["type"])
+        if preferred_cat in tl or tl in preferred_cat:
+            score += 0.07
 
     return round(max(0.05, min(score, 1.0)), 4)
 
@@ -564,7 +575,27 @@ async def recommend_init(req: InitReq, request: Request):
                 "data": {"fallback_used": True}}
 
     session_id = f"rec_s_{uuid4().hex[:10]}"
-    intent = parse_intent(req.prompt)
+
+    # 时间上下文先行构建（纯 CPU，无外部依赖），注入给 LLM 以提升类型选择准确性
+    time_context_early = _build_time_context()
+
+    # 优先使用 LLM 版本意图解析，失败时降级到规则版本
+    intent_llm_used = False
+    try:
+        logger.info("尝试使用 LLM 解析用户 prompt: %s", req.prompt[:50])
+        intent = await llm.parse_intent_with_ai(req.prompt, req.location, time_context_early)
+        intent_llm_used = True
+        logger.info(
+            "LLM 解析成功，preferred=%s, poi_types=%s, radius=%d",
+            intent.get("preferred_category", ""),
+            intent.get("poi_types", ""),
+            intent.get("radius_m", 0),
+        )
+    except Exception as e:
+        logger.warning("LLM 解析失败，降级到规则版本: %s", str(e)[:100])
+        intent = parse_intent(req.prompt)
+        intent_llm_used = False
+    
     resolved_user_id = _resolve_user_id(request, req.user_id)
 
     # 把用户历史偏好混入 intent
@@ -610,6 +641,7 @@ async def recommend_init(req: InitReq, request: Request):
         "address_name": address_name,
         "user_id":      resolved_user_id,
         "context":      session_context,
+        "intent_llm_used": intent_llm_used,
         "created_at":   datetime.now().isoformat(),
     })
     return {
@@ -620,6 +652,7 @@ async def recommend_init(req: InitReq, request: Request):
             "address_name":      address_name,   # 前端 LocationBar 用
             "normalized_intent": intent,
             "fallback_used":     False,
+            "intent_llm_used":   intent_llm_used,
         },
     }
 
@@ -757,11 +790,42 @@ async def recommend_candidates(req: CandidateReq, request: Request):
         ]
         fallback_used = True
 
-    # 让候选卡片理由也尽量由 AI 生成；失败则保留模板文案
+    # 并发：候选卡片 AI 理由 + 搜索结果摘要
+    default_summary = (
+        f"已为你找到「{'、'.join((intent.get('must_keywords') or [])[:2])}」相关的 {len(candidates)} 个去处"
+        if intent.get("must_keywords")
+        else f"命运已为你备好 {len(candidates)} 个候选，其中藏着一个意外之选"
+    )
+    ai_summary = default_summary
     try:
-        await _enrich_ai_judgements(candidates, session.get("prompt", ""), session.get("context"))
+        type_labels = list(dict.fromkeys(c["type"] for c in candidates if c.get("type")))
+        enrich_task = _enrich_ai_judgements(
+            candidates, session.get("prompt", ""), session.get("context")
+        )
+        summary_task = asyncio.wait_for(
+            llm.generate_search_summary(
+                prompt=session.get("prompt", ""),
+                type_labels=type_labels[:3],
+                count=len(candidates),
+                time_context=session.get("context"),
+            ),
+            timeout=4.0,
+        )
+        enrich_result, ai_summary_result = await asyncio.gather(
+            enrich_task, summary_task, return_exceptions=True
+        )
+        if isinstance(enrich_result, Exception):
+            logger.warning("候选 ai_judgement 生成失败，使用模板: %s", enrich_result)
+        if isinstance(ai_summary_result, str) and ai_summary_result.strip():
+            ai_summary = ai_summary_result.strip()
+        elif isinstance(ai_summary_result, Exception):
+            logger.warning("AI 摘要生成失败: %s", ai_summary_result)
     except Exception as exc:
-        logger.warning("候选 ai_judgement 生成失败，使用模板: %s", exc)
+        logger.warning("候选 enrichment 失败，使用模板: %s", exc)
+        try:
+            await _enrich_ai_judgements(candidates, session.get("prompt", ""), session.get("context"))
+        except Exception:
+            pass
 
     session_set_candidates(req.session_id, candidates)
 
@@ -769,11 +833,7 @@ async def recommend_candidates(req: CandidateReq, request: Request):
         "code": "OK",
         "data": {
             "session_id":    req.session_id,
-            "summary": (
-                f"已为你找到「{'、'.join((intent.get('must_keywords') or [])[:2])}」相关的 {len(candidates)} 个去处"
-                if intent.get("must_keywords")
-                else f"命运已为你备好 {len(candidates)} 个候选，其中藏着一个意外之选"
-            ),
+            "summary":       ai_summary,
             "candidates":    candidates,
             "fallback_used": fallback_used,
         },
