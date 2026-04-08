@@ -117,10 +117,10 @@ def _load_celebrity_skill(name: str) -> str:
     return content
 
 
-async def _chat(system: str, user: str, max_tokens: int = 200, temperature: float = 0.9) -> str:
+async def _chat(system: str, user: str, max_tokens: int = 200, temperature: float = 0.9, timeout: float | None = None) -> str:
     if not _API_KEY:
         raise RuntimeError("DEEPSEEK_API_KEY 未配置")
-    async with httpx.AsyncClient(timeout=_TIMEOUT, trust_env=False) as client:
+    async with httpx.AsyncClient(timeout=timeout or _TIMEOUT, trust_env=False) as client:
         resp = await client.post(
             _BASE_URL,
             headers={
@@ -273,7 +273,7 @@ async def celebrity_persona_review(
         '{"scene":"leave","tag":"总结","text":"...","emotion":"..."}'
         ']}'
     )
-    raw = await _chat(system, user, max_tokens=1200)
+    raw = await _chat(system, user, max_tokens=1200, timeout=22.0)
     raw = raw.strip().removeprefix("```json").removeprefix("```").removesuffix("```").strip()
     data = json.loads(raw)
 

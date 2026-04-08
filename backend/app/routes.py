@@ -579,24 +579,60 @@ async def recommend_init(req: InitReq, request: Request):
     # 时间上下文先行构建（纯 CPU，无外部依赖），注入给 LLM 以提升类型选择准确性
     time_context_early = _build_time_context()
 
-    # 优先使用 LLM 版本意图解析，失败时降级到规则版本
     intent_llm_used = False
-    try:
-        logger.info("尝试使用 LLM 解析用户 prompt: %s", req.prompt[:50])
-        intent = await llm.parse_intent_with_ai(req.prompt, req.location, time_context_early)
-        intent_llm_used = True
-        logger.info(
-            "LLM 解析成功，preferred=%s, poi_types=%s, radius=%d",
-            intent.get("preferred_category", ""),
-            intent.get("poi_types", ""),
-            intent.get("radius_m", 0),
-        )
-    except Exception as e:
-        logger.warning("LLM 解析失败，降级到规则版本: %s", str(e)[:100])
-        intent = parse_intent(req.prompt)
-        intent_llm_used = False
-    
+    intent: dict = {}
+    _regeo_done: str | None = None
+    _weather_done: dict | None = None
+
     resolved_user_id = _resolve_user_id(request, req.user_id)
+
+    # 位置解析：坐标直接用；文字地址先 geocode（必须先完成，后续依赖坐标）
+    raw_loc = req.location or ""
+    if raw_loc and "," not in raw_loc:
+        # 文字地址：LLM intent 与 geocode 并发执行（互不依赖）
+        try:
+            (intent_result, geocode_result) = await asyncio.gather(
+                llm.parse_intent_with_ai(req.prompt, req.location, time_context_early),
+                geocode(raw_loc),
+                return_exceptions=True,
+            )
+            if isinstance(intent_result, Exception):
+                logger.warning("LLM intent 失败，降级规则版本: %s", str(intent_result)[:100])
+                intent = parse_intent(req.prompt)
+                intent_llm_used = False
+            else:
+                intent = intent_result
+                intent_llm_used = True
+            location = (geocode_result if isinstance(geocode_result, str) and geocode_result else None) or DEFAULT_LOCATION
+        except Exception:
+            intent = parse_intent(req.prompt)
+            intent_llm_used = False
+            location = DEFAULT_LOCATION
+    else:
+        location = raw_loc or DEFAULT_LOCATION
+        # GPS 坐标：LLM intent / regeo / weather 三者全部并发（都只依赖原始坐标字符串）
+        try:
+            (intent_result, regeo_result, weather_result) = await asyncio.gather(
+                llm.parse_intent_with_ai(req.prompt, req.location, time_context_early),
+                regeo(location),
+                get_weather_from_location(location),
+                return_exceptions=True,
+            )
+            if isinstance(intent_result, Exception):
+                logger.warning("LLM intent 失败，降级规则版本: %s", str(intent_result)[:100])
+                intent = parse_intent(req.prompt)
+                intent_llm_used = False
+            else:
+                intent = intent_result
+                intent_llm_used = True
+            # regeo / weather 结果暂存，跳过下方的串行调用
+            _regeo_done = regeo_result if isinstance(regeo_result, str) else None
+            _weather_done = weather_result if isinstance(weather_result, dict) else None
+        except Exception:
+            intent = parse_intent(req.prompt)
+            intent_llm_used = False
+            _regeo_done = None
+            _weather_done = None
 
     # 把用户历史偏好混入 intent
     if resolved_user_id:
@@ -607,32 +643,30 @@ async def recommend_init(req: InitReq, request: Request):
             if user_prefs_data.get("type_weights"):
                 intent["type_weights"] = user_prefs_data["type_weights"]
 
-    # 位置解析：坐标直接用；文字地址先 geocode；无位置用默认
-    raw_loc = req.location or ""
-    if raw_loc and "," not in raw_loc:
-        # 用户手动输入的文字地址，转成坐标
-        try:
-            geocoded = await geocode(raw_loc)
-            location = geocoded or DEFAULT_LOCATION
-        except Exception:
-            location = DEFAULT_LOCATION
-    else:
-        location = raw_loc or DEFAULT_LOCATION
-
-    # 逆地理编码：把坐标转成地名，供前端 LocationBar 展示
+    # 逆地理编码 + 天气：GPS 路径已并发完成，文字路径在这里补做
     address_name = req.location if (raw_loc and "," not in raw_loc) else ""
-    try:
-        address_name = await regeo(location)
-    except Exception:
-        pass
+    session_context = time_context_early.copy()
 
-    # 构建时间 + 天气上下文，注入给后续 LLM 生成命运独白
-    session_context = _build_time_context()
-    try:
-        weather = await get_weather_from_location(location)
-        session_context.update(weather)
-    except Exception:
-        pass  # 天气获取失败不影响主流程
+    if raw_loc and "," not in raw_loc:
+        # 文字地址路径：geocode 已完成，还需 regeo + weather（并发）
+        try:
+            (regeo_result, weather_result) = await asyncio.gather(
+                regeo(location),
+                get_weather_from_location(location),
+                return_exceptions=True,
+            )
+            if isinstance(regeo_result, str) and regeo_result:
+                address_name = regeo_result
+            if isinstance(weather_result, dict):
+                session_context.update(weather_result)
+        except Exception:
+            pass
+    else:
+        # GPS 路径：直接使用已并发完成的结果
+        if _regeo_done:
+            address_name = _regeo_done
+        if _weather_done:
+            session_context.update(_weather_done)
 
     session_set(session_id, {
         "prompt":       req.prompt,
@@ -1036,6 +1070,7 @@ async def persona_review(req: PersonaReq, request: Request):
             "persona":      req.persona,
             "summary":      result.get("summary", result.get("review", "")),
             "slices":       result.get("slices", []),
+            "verdict":      result.get("verdict", ""),
             # 向后兼容字段
             "review":       result.get("review", ""),
             "risk":         result.get("risk"),
