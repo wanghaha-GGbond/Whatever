@@ -41,11 +41,24 @@ export function Home() {
   const voiceToastTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const slowTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const locationRef = useRef<string | undefined>(undefined);
+  const inspireCacheRef = useRef<string | null>(null);
+  const isPrefetchingRef = useRef(false);
+
+  const prefetchInspire = () => {
+    if (isPrefetchingRef.current) return;
+    isPrefetchingRef.current = true;
+    api.inspire()
+      .then((res) => { if (res.data.prompt) inspireCacheRef.current = res.data.prompt; })
+      .catch(() => {})
+      .finally(() => { isPrefetchingRef.current = false; });
+  };
 
   // 页面加载后静默获取位置（不阻塞提交）
   useEffect(() => {
     // 预热后端（Render Free 冷启动可能较慢），不阻塞主流程
     api.resolveLocation().catch(() => {});
+    // 预取一条 inspire，让用户点按钮时立即响应
+    prefetchInspire();
 
     const existingUserId = sessionStore.getUserId();
     api.authAnonymous(existingUserId || undefined)
@@ -154,6 +167,14 @@ export function Home() {
   };
 
   const handleInspire = async () => {
+    // 缓存命中：立即返回，同时后台预取下一条
+    if (inspireCacheRef.current) {
+      setPrompt(inspireCacheRef.current);
+      inspireCacheRef.current = null;
+      prefetchInspire();
+      return;
+    }
+    // 缓存未命中（预取还没完成）：降级为实时请求
     setInspireLoading(true);
     try {
       const res = await api.inspire();
@@ -162,6 +183,7 @@ export function Home() {
       // 失败静默，用户自己填
     } finally {
       setInspireLoading(false);
+      prefetchInspire(); // 为下次点击预取
     }
   };
 
