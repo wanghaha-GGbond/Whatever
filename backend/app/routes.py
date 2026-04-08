@@ -471,7 +471,7 @@ async def _enrich_ai_judgements(
     for c, r in zip(candidates, results):
         if isinstance(r, Exception):
             continue
-        text = str(r).strip()
+        text = str(r).strip()[:50]
         if text:
             c["ai_judgement"] = text
 
@@ -1049,8 +1049,18 @@ async def persona_review(req: PersonaReq, request: Request):
             )
     except Exception as exc:
         logger.warning("LLM persona/celebrity_review 失败，降级模板: %s", exc)
-        p = PERSONA.get(req.persona, PERSONA["独处型"])
-        result = {"review": p["review"], "risk": p["risk"], "conclusion": p["conclusion"]}
+        if req.celebrity:
+            result = {
+                "summary":    "名人视角暂时无法加载",
+                "slices":     [],
+                "review":     "名人视角暂时无法加载，请稍后再试。",
+                "verdict":    "",
+                "risk":       None,
+                "conclusion": "",
+            }
+        else:
+            p = PERSONA.get(req.persona, PERSONA["独处型"])
+            result = {"review": p["review"], "risk": p["risk"], "conclusion": p["conclusion"]}
         fallback_used = True
 
     if fallback_used:

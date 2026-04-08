@@ -108,6 +108,8 @@ NARRATIVE_ANGLES = [
 def _load_celebrity_skill(name: str) -> str:
     """Load and return skill file content with YAML frontmatter stripped."""
     skill_path = Path(__file__).parent.parent / "skills" / f"{name}.skill"
+    if not skill_path.exists():
+        raise FileNotFoundError(f"Celebrity skill file not found: {name}.skill")
     content = skill_path.read_text(encoding="utf-8")
     # Strip YAML frontmatter (--- ... ---)
     if content.startswith("---"):
@@ -138,7 +140,10 @@ async def _chat(system: str, user: str, max_tokens: int = 200, temperature: floa
             },
         )
         resp.raise_for_status()
-    return resp.json()["choices"][0]["message"]["content"].strip()
+        try:
+            return resp.json()["choices"][0]["message"]["content"].strip()
+        except (KeyError, IndexError, ValueError) as e:
+            raise RuntimeError(f"DeepSeek API 响应格式异常: {e}") from e
 
 
 async def persona_review(
@@ -166,6 +171,7 @@ async def persona_review(
         "conclusion": str,
     }
     """
+    user_prompt = user_prompt[:300]  # 防止 prompt injection / 超长输入
     p = PERSONA_CHARS.get(persona)
     if isinstance(p, dict):
         identity = p["identity"]
@@ -202,9 +208,12 @@ async def persona_review(
         '{"scene":"leave","tag":"总结","text":"...","emotion":"..."}'
         ']}'
     )
-    raw = await _chat(system, user, max_tokens=500)
+    raw = await _chat(system, user, max_tokens=500, timeout=9.0)
     raw = raw.strip().removeprefix("```json").removeprefix("```").removesuffix("```").strip()
-    data = json.loads(raw)
+    try:
+        data = json.loads(raw)
+    except json.JSONDecodeError as e:
+        raise RuntimeError(f"persona_review JSON 解析失败: {e}") from e
 
     slices = data.get("slices", [])
     summary = str(data.get("summary", ""))
@@ -221,8 +230,8 @@ async def persona_review(
         normalized_slices.append({
             "scene":   scene_key,
             "tag":     s.get("tag", tag),
-            "text":    str(s.get("text", "")),
-            "emotion": str(s.get("emotion", "")),
+            "text":    str(s.get("text", "") or "—"),
+            "emotion": str(s.get("emotion", "") or "—"),
         })
 
     leave_slice = normalized_slices[3]
@@ -273,9 +282,12 @@ async def celebrity_persona_review(
         '{"scene":"leave","tag":"总结","text":"...","emotion":"..."}'
         ']}'
     )
-    raw = await _chat(system, user, max_tokens=1200, timeout=22.0)
+    raw = await _chat(system, user, max_tokens=1500, timeout=22.0)
     raw = raw.strip().removeprefix("```json").removeprefix("```").removesuffix("```").strip()
-    data = json.loads(raw)
+    try:
+        data = json.loads(raw)
+    except json.JSONDecodeError as e:
+        raise RuntimeError(f"celebrity_persona_review JSON 解析失败: {e}") from e
 
     slices = data.get("slices", [])
     summary = str(data.get("summary", ""))
@@ -293,8 +305,8 @@ async def celebrity_persona_review(
         normalized_slices.append({
             "scene":   scene_key,
             "tag":     s.get("tag", tag),
-            "text":    str(s.get("text", "")),
-            "emotion": str(s.get("emotion", "")),
+            "text":    str(s.get("text", "") or "—"),
+            "emotion": str(s.get("emotion", "") or "—"),
         })
 
     leave_slice = normalized_slices[3]
@@ -355,7 +367,7 @@ async def pick_reason(
         + f"命运选中了：{poi_name}（{poi_type}）/ {eta_min}分钟可到 / {budget}\n"
         "命运说："
     )
-    return await _chat(system, user, max_tokens=80, temperature=1.1)
+    return await _chat(system, user, max_tokens=80, temperature=0.95, timeout=5.0)
 
 
 async def generate_inspire() -> str:
@@ -373,7 +385,7 @@ async def generate_inspire() -> str:
         "禁止重复示例，每次都要不同。"
     )
     user = "随机生成一条。只输出那句话，不加引号，不加其他文字。"
-    return await _chat(system, user, max_tokens=60, temperature=1.4)
+    return await _chat(system, user, max_tokens=60, temperature=1.1, timeout=6.0)
 
 
 # ─── AI 版意图解析（使用 LLM 替代规则 NLU） ───────────────────────────────
@@ -490,16 +502,19 @@ async def parse_intent_with_ai(
     if location:
         user += f"\n当前位置：{location}"
 
-    raw = await _chat(system, user, max_tokens=250, temperature=0.3)
+    raw = await _chat(system, user, max_tokens=250, temperature=0.3, timeout=7.0)
     raw = raw.strip().removeprefix("```json").removeprefix("```").removesuffix("```").strip()
-    data = json.loads(raw)
+    try:
+        data = json.loads(raw)
+    except json.JSONDecodeError as e:
+        raise RuntimeError(f"parse_intent_with_ai JSON 解析失败: {e}") from e
 
     # 解析多类型 categories（兼容旧格式单 category）
     categories_raw = data.get("categories", [])
     if not categories_raw and data.get("category"):
         categories_raw = [{"name": data["category"], "weight": 1.0}]
     if not categories_raw:
-        categories_raw = [{"name": "公园", "weight": 1.0}]
+        raise ValueError("LLM 未返回任何 categories，降级到规则 NLU")
 
     # 合并 poi_types 并建立 type_weights
     seen_codes: set[str] = set()
@@ -603,4 +618,4 @@ async def generate_search_summary(
         f"找到了 {count} 个{type_str}"
         + (f"，时间：{time_hint}" if time_hint else "")
     )
-    return await _chat(system, user, max_tokens=60, temperature=0.8)
+    return await _chat(system, user, max_tokens=60, temperature=0.8, timeout=5.0)
