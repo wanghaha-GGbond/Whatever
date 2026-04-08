@@ -156,6 +156,51 @@ async def regeo(location: str) -> str:
         return ""
 
 
+async def regeo_with_adcode(location: str) -> tuple[str, str]:
+    """
+    逆地理编码扩展版：返回 (address_name, adcode)。
+    供需要同时获取地名和 adcode（用于天气查询）的调用方使用，
+    避免对同一坐标重复发起两次 regeo 请求。
+    失败时返回 ("", "")。
+    """
+    qs = f"key={_key()}&location={location}&poitype=&radius=100&extensions=base&roadlevel=1"
+    try:
+        data = await _request_json(f"/geocode/regeo?{qs}", 3.5)
+        if data.get("status") != "1":
+            return "", ""
+        addr = data.get("regeocode", {}).get("addressComponent", {})
+        neighborhood = addr.get("neighborhood", {}).get("name", "")
+        township = addr.get("township", "")
+        district = addr.get("district", "")
+        name = neighborhood or township or district or ""
+        adcode = addr.get("adcode", "")
+        return name, adcode
+    except Exception:
+        return "", ""
+
+
+async def get_weather_by_adcode(adcode: str) -> dict:
+    """
+    根据已知 adcode 直接查询天气，跳过 regeo 步骤。
+    供 regeo_with_adcode 结果复用时调用，避免重复 regeo。
+    失败时返回 {}。
+    """
+    if not adcode:
+        return {}
+    try:
+        qs = f"key={_key()}&city={adcode}&extensions=base&output=JSON"
+        weather_data = await _request_json(f"/weather/weatherInfo?{qs}", 3.0)
+        if weather_data.get("status") != "1" or not weather_data.get("lives"):
+            return {}
+        live = weather_data["lives"][0]
+        return {
+            "weather": live.get("weather", ""),
+            "temperature": live.get("temperature", ""),
+        }
+    except Exception:
+        return {}
+
+
 async def geocode(address: str) -> str:
     """文字地址 → "lng,lat"，失败返回空字符串。"""
     qs = f"key={_key()}&address={address}&output=JSON"

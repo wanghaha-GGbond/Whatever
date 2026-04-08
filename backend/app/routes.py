@@ -19,7 +19,7 @@ from pydantic import BaseModel, Field
 from .services.intent_parser import (
     parse_intent, eta_min, budget_text, make_judgement, make_risk_label, transport_label, DEFAULT_TYPES,
 )
-from .services.amap import search_around, get_type_label, nav_url, regeo, geocode, get_weather_from_location, get_static_map
+from .services.amap import search_around, get_type_label, nav_url, regeo, regeo_with_adcode, get_weather_by_adcode, geocode, get_weather_from_location, get_static_map
 from .services import llm
 from .db import (
     init_db,
@@ -610,12 +610,12 @@ async def recommend_init(req: InitReq, request: Request):
             location = DEFAULT_LOCATION
     else:
         location = raw_loc or DEFAULT_LOCATION
-        # GPS 坐标：LLM intent / regeo / weather 三者全部并发（都只依赖原始坐标字符串）
+        # GPS 坐标：LLM intent 与 regeo_with_adcode 并发；regeo 结果同时拿到 adcode
+        # 避免 get_weather_from_location 内部再发一次重复 regeo（节省 1 次 Amap 调用）
         try:
-            (intent_result, regeo_result, weather_result) = await asyncio.gather(
+            (intent_result, regeo_full_result) = await asyncio.gather(
                 llm.parse_intent_with_ai(req.prompt, req.location, time_context_early),
-                regeo(location),
-                get_weather_from_location(location),
+                regeo_with_adcode(location),
                 return_exceptions=True,
             )
             if isinstance(intent_result, Exception):
@@ -625,9 +625,12 @@ async def recommend_init(req: InitReq, request: Request):
             else:
                 intent = intent_result
                 intent_llm_used = True
-            # regeo / weather 结果暂存，跳过下方的串行调用
-            _regeo_done = regeo_result if isinstance(regeo_result, str) else None
-            _weather_done = weather_result if isinstance(weather_result, dict) else None
+            if isinstance(regeo_full_result, tuple):
+                _regeo_done, _adcode = regeo_full_result
+            else:
+                _regeo_done, _adcode = None, ""
+            # 用已有 adcode 单独查天气，跳过重复 regeo
+            _weather_done = await get_weather_by_adcode(_adcode) if _adcode else {}
         except Exception:
             intent = parse_intent(req.prompt)
             intent_llm_used = False
@@ -638,7 +641,7 @@ async def recommend_init(req: InitReq, request: Request):
     if resolved_user_id:
         user_prefs_data = prefs_get(resolved_user_id)
         if user_prefs_data:
-            if intent["budget_max"] is None and user_prefs_data.get("budget_avg"):
+            if intent.get("budget_max") is None and user_prefs_data.get("budget_avg"):
                 intent["budget_max"] = user_prefs_data["budget_avg"]
             if user_prefs_data.get("type_weights"):
                 intent["type_weights"] = user_prefs_data["type_weights"]
@@ -717,9 +720,9 @@ async def recommend_candidates(req: CandidateReq, request: Request):
     fallback_used = False
 
     try:
-        poi_types  = intent["poi_types"]
+        poi_types  = intent.get("poi_types") or DEFAULT_TYPES
         keywords   = intent.get("keywords", "")
-        radius     = intent["radius_m"]
+        radius     = intent.get("radius_m") or 4000
         fetch_limit = min(req.limit * 4, 25)
         effective_types = poi_types  # 跟踪降级后实际使用的类型，供补齐时复用
 
@@ -761,7 +764,7 @@ async def recommend_candidates(req: CandidateReq, request: Request):
 
         # 不足 10 个时，自动扩圈补齐（先同类型扩圈，再用默认综合类型补充）
         if len(candidates) < req.limit:
-            expanded_radius = min(15000, max(int(intent["radius_m"] * 2), 6000))
+            expanded_radius = min(15000, max(int((intent.get("radius_m") or 4000) * 2), 6000))
             merged_pois = {p.get("id"): p for p in pois if p.get("id")}
 
             try:

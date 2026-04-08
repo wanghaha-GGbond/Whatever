@@ -1,4 +1,4 @@
-import { useState, useRef, useEffect } from 'react';
+import { useState, useRef, useEffect, useCallback } from 'react';
 import { useNavigate } from 'react-router';
 import { LocationBar } from '../components/location-bar';
 import { ChipGroup } from '../components/chip-group';
@@ -44,14 +44,14 @@ export function Home() {
   const inspireCacheRef = useRef<string | null>(null);
   const isPrefetchingRef = useRef(false);
 
-  const prefetchInspire = () => {
+  const prefetchInspire = useCallback(() => {
     if (isPrefetchingRef.current) return;
     isPrefetchingRef.current = true;
     api.inspire()
       .then((res) => { if (res.data.prompt) inspireCacheRef.current = res.data.prompt; })
       .catch(() => {})
       .finally(() => { isPrefetchingRef.current = false; });
-  };
+  }, []);
 
   // 页面加载后静默获取位置（不阻塞提交）
   useEffect(() => {
