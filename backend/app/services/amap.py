@@ -77,7 +77,7 @@ async def search_around(
         "type_code": str,   # 高德 typecode
         "location": str,    # "lng,lat"
         "distance": int,    # 米
-        "price_level": str, # "0"~"4"，可能为空
+        "per_cost": str,    # 高德 biz_ext.cost，人均消费数字字符串（如"35"），可能为空
         "open_time": str,   # 营业时间，可能为空
         "rating": str,      # 评分，可能为空
         "address": str,
@@ -114,7 +114,7 @@ async def search_around(
             "type_code":   poi.get("typecode", ""),
             "location":    poi.get("location", ""),
             "distance":    int(poi.get("distance") or 0),
-            "price_level": biz.get("cost") or poi.get("biz_type") or "",
+            "per_cost":    biz.get("cost") or "",   # 人均消费，如"35"；空串表示未知
             "open_time":   biz.get("opentime", ""),
             "rating":      biz.get("rating") or poi.get("biz_rating") or "",
             "address":     poi.get("address", ""),

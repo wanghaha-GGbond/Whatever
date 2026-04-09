@@ -17,7 +17,7 @@ from fastapi import APIRouter, HTTPException, Request, Response
 from pydantic import BaseModel, Field
 
 from .services.intent_parser import (
-    parse_intent, eta_min, budget_text, make_judgement, make_risk_label, transport_label, DEFAULT_TYPES,
+    parse_intent, eta_min, budget_text, make_judgement, transport_label, DEFAULT_TYPES,
 )
 from .services.amap import search_around, get_type_label, nav_url, regeo, regeo_with_adcode, get_weather_by_adcode, geocode, get_weather_from_location, get_static_map
 from .services import llm
@@ -66,7 +66,7 @@ MOCK_CANDIDATES = [
         "distance_m": 2300, "eta_min": 12, "budget_text": "¥0",
         "transport_mode": "骑车",
         "score": 0.82, "ai_judgement": "现在去比较轻松，适合一个人待一会",
-        "risk_label": "傍晚人会变多", "nav_url": "",
+        "risk_label": None, "nav_url": "",
     },
     {
         "candidate_id": "cand_2", "poi_id": "amap_mock_2",
@@ -74,7 +74,7 @@ MOCK_CANDIDATES = [
         "distance_m": 1900, "eta_min": 10, "budget_text": "¥28",
         "transport_mode": "骑车",
         "score": 0.75, "ai_judgement": "距离近，坐一小时不会有负担",
-        "risk_label": "周末3点后可能满座", "nav_url": "",
+        "risk_label": None, "nav_url": "",
     },
     {
         "candidate_id": "cand_3", "poi_id": "amap_mock_3",
@@ -90,7 +90,7 @@ MOCK_CANDIDATES = [
         "distance_m": 1700, "eta_min": 8, "budget_text": "¥0",
         "transport_mode": "骑车",
         "score": 0.68, "ai_judgement": "风景好，可以边骑边看，比较放松",
-        "risk_label": "下午太阳比较晒", "nav_url": "",
+        "risk_label": None, "nav_url": "",
     },
     {
         "candidate_id": "cand_5", "poi_id": "amap_mock_5",
@@ -287,10 +287,9 @@ def _score_poi(poi: dict, intent: dict, type_weights: dict | None = None) -> flo
     score -= w["distance"] * min(math.sqrt(dist / radius), 1.0)
 
     budget_max = intent.get("budget_max")
-    pl = poi.get("price_level", "")
-    level_cost = {"0": 0, "1": 20, "2": 50, "3": 120, "4": 200}
-    if budget_max is not None and pl in level_cost:
-        if level_cost[pl] > budget_max:
+    per_cost_str = poi.get("per_cost", "")
+    if budget_max is not None and per_cost_str and per_cost_str.strip().isdigit():
+        if int(per_cost_str.strip()) > budget_max:
             return 0.0
 
     try:
@@ -414,10 +413,10 @@ def _select_candidates(pois: list[dict], intent: dict, limit: int = 5) -> list[d
             "distance_m":   poi["distance"],
             "eta_min":      eta_min(poi["distance"], transport),
             "transport_mode": transport_mode,
-            "budget_text":  budget_text(poi["price_level"], budget_max),
+            "budget_text":  budget_text(poi["per_cost"], budget_max),
             "score":        round(max(0.05, min(s, 1.0)), 4),
             "ai_judgement": make_judgement(type_label),
-            "risk_label":   make_risk_label(type_label),
+            "risk_label":   None,  # 已由 LLM ai_judgement 覆盖，模板不再输出
             "poi_location": poi.get("location", ""),
             "nav_url":      nav_url(poi["name"], poi["location"]),
         })

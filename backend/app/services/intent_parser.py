@@ -186,21 +186,18 @@ def transport_label(transport: str) -> str:
     return TRANSPORT_LABEL.get(transport, TRANSPORT_LABEL["bike"])
 
 
-def budget_text(price_level: str | None, budget_max: int | None) -> str:
-    """把高德 price_level (0-4) + 用户预算上限转成显示文字。"""
-    level_map = {
-        "0": "¥0",
-        "1": "¥0-30",
-        "2": "¥30-80",
-        "3": "¥80-150",
-        "4": "¥150+",
-    }
-    if price_level in level_map:
-        return level_map[price_level]
+def budget_text(per_cost: str | None, budget_max: int | None) -> str:
+    """
+    把高德 biz_ext.cost（人均消费字符串，如"35"）+ 用户预算上限转成显示文字。
+    优先展示真实人均价；无数据时展示用户预算上限；两者皆无则显示"不限"。
+    """
+    # 优先用高德返回的真实人均价
+    if per_cost and per_cost.strip().isdigit():
+        return f"人均¥{per_cost.strip()}"
     if budget_max == 0:
         return "¥0"
     if budget_max is not None:
-        return f"¥0-{budget_max}"
+        return f"¥{budget_max}以内"
     return "不限"
 
 
