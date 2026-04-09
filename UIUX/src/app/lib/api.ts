@@ -210,4 +210,11 @@ export const api = {
       headers: DASHBOARD_ADMIN_TOKEN ? { 'X-Admin-Token': DASHBOARD_ADMIN_TOKEN } : undefined,
     });
   },
+
+  activatePro(code: string) {
+    return request<{ code: string; data: { activated: boolean } }>('/pro/activate', {
+      method: 'POST',
+      body: JSON.stringify({ code }),
+    });
+  },
 };

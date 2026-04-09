@@ -479,6 +479,7 @@ export function Result() {
   const [reviewLoading, setReviewLoading] = useState(false);
   const [reviewError, setReviewError] = useState('');
   const [proGateOpen, setProGateOpen] = useState(false);
+  const [proUnlocked, setProUnlocked] = useState(isPro());
   const [selectedCelebrity, setSelectedCelebrity] = useState<string | null>(null);
   const [celebLoading, setCelebLoading] = useState(false);
   const [celebError, setCelebError] = useState('');
@@ -504,7 +505,7 @@ export function Result() {
   };
 
   const handleCelebrityClick = useCallback(async (celebrity: typeof CELEBRITIES[0]) => {
-    if (!isPro()) {
+    if (!proUnlocked) {
       setProGateOpen(true);
       return;
     }
@@ -532,7 +533,7 @@ export function Result() {
     } finally {
       setCelebLoading(false);
     }
-  }, [selectedCelebrity, reviewCache]);
+  }, [selectedCelebrity, reviewCache, proUnlocked]);
 
   const loadPersonaReview = useCallback(async (persona: string, showLoading = true) => {
     const sessionId = sessionStore.getSessionId();
@@ -783,7 +784,7 @@ export function Result() {
                 key={celebrity.id}
                 celebrity={celebrity}
                 selected={selectedCelebrity === celebrity.id}
-                unlocked={isPro()}
+                unlocked={proUnlocked}
                 onClick={() => handleCelebrityClick(celebrity)}
               />
             ))}
@@ -987,7 +988,11 @@ export function Result() {
           personaSummary2={shareReview2?.summary ?? shareReview2?.review ?? ''}
         />
       )}
-      <ProGateSheet open={proGateOpen} onClose={() => setProGateOpen(false)} />
+      <ProGateSheet
+        open={proGateOpen}
+        onClose={() => setProGateOpen(false)}
+        onActivated={() => setProUnlocked(true)}
+      />
     </div>
   );
 }

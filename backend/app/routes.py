@@ -1191,3 +1191,28 @@ async def events_track(req: TrackReq):
 async def dashboard(request: Request, days: int = 7):
     _assert_admin_token(request)
     return {"code": "OK", "data": dashboard_metrics(days)}
+
+
+# ─── PRO 订阅激活 ────────────────────────────────────────────────────────────
+
+class ProActivateReq(BaseModel):
+    code: str
+
+
+@router.post("/pro/activate")
+async def pro_activate(req: ProActivateReq):
+    """
+    邀请码激活 PRO。
+    邀请码通过环境变量 PRO_INVITE_CODE 配置（支持逗号分隔多码）。
+    成功返回 { "activated": true }，失败返回 400。
+    """
+    raw = os.getenv("PRO_INVITE_CODE", "").strip()
+    if not raw:
+        # 未配置邀请码时，任何输入都视为无效
+        raise HTTPException(status_code=400, detail="PRO_INVITE_CODE 未配置")
+
+    valid_codes = {c.strip() for c in raw.split(",") if c.strip()}
+    if req.code.strip() not in valid_codes:
+        raise HTTPException(status_code=400, detail="邀请码无效")
+
+    return {"code": "OK", "data": {"activated": True}}

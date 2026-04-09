@@ -1,12 +1,51 @@
-import { X, Sparkles } from 'lucide-react';
+import { useState } from 'react';
+import { X, Sparkles, Loader2 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
+import { api } from '../lib/api';
+import { setPro } from '../lib/pro';
 
 interface ProGateSheetProps {
   open: boolean;
   onClose: () => void;
+  onActivated?: () => void;
 }
 
-export function ProGateSheet({ open, onClose }: ProGateSheetProps) {
+type Status = 'idle' | 'loading' | 'error' | 'success';
+
+export function ProGateSheet({ open, onClose, onActivated }: ProGateSheetProps) {
+  const [code, setCode] = useState('');
+  const [status, setStatus] = useState<Status>('idle');
+  const [errorMsg, setErrorMsg] = useState('');
+
+  const handleActivate = async () => {
+    const trimmed = code.trim();
+    if (!trimmed) return;
+    setStatus('loading');
+    setErrorMsg('');
+    try {
+      await api.activatePro(trimmed);
+      setPro(true);
+      setStatus('success');
+      setTimeout(() => {
+        onActivated?.();
+        onClose();
+        setStatus('idle');
+        setCode('');
+      }, 900);
+    } catch {
+      setStatus('error');
+      setErrorMsg('邀请码无效，请确认后重试');
+    }
+  };
+
+  const handleClose = () => {
+    if (status === 'loading') return;
+    onClose();
+    setStatus('idle');
+    setCode('');
+    setErrorMsg('');
+  };
+
   return (
     <AnimatePresence>
       {open && (
@@ -17,7 +56,7 @@ export function ProGateSheet({ open, onClose }: ProGateSheetProps) {
             animate={{ opacity: 1 }}
             exit={{ opacity: 0 }}
             className="fixed inset-0 bg-black/40 z-40"
-            onClick={onClose}
+            onClick={handleClose}
           />
           {/* Sheet */}
           <motion.div
@@ -32,12 +71,16 @@ export function ProGateSheet({ open, onClose }: ProGateSheetProps) {
                 <Sparkles className="w-5 h-5 text-amber-500" />
                 <span className="font-bold text-[#1d1d1f] text-lg">解锁名人视角</span>
               </div>
-              <button onClick={onClose} className="text-[#6e6e73] hover:text-[#1d1d1f] transition-colors">
+              <button
+                onClick={handleClose}
+                disabled={status === 'loading'}
+                className="text-[#6e6e73] hover:text-[#1d1d1f] transition-colors disabled:opacity-40"
+              >
                 <X className="w-5 h-5" />
               </button>
             </div>
 
-            <p className="text-sm text-[#6e6e73] mb-6 leading-relaxed">
+            <p className="text-sm text-[#6e6e73] mb-5 leading-relaxed">
               订阅 <span className="font-semibold text-[#1d1d1f]">WHATEVER PRO</span>，以历史名人、商业领袖的视角重新审视你的命运之地。
             </p>
 
@@ -57,12 +100,53 @@ export function ProGateSheet({ open, onClose }: ProGateSheetProps) {
               ))}
             </div>
 
-            <button
-              disabled
-              className="w-full py-3.5 rounded-2xl bg-gradient-to-r from-amber-400 to-amber-500 text-white font-semibold text-sm opacity-60 cursor-not-allowed"
-            >
-              即将开放 · 敬请期待
-            </button>
+            {/* 邀请码输入区 */}
+            <div className="mb-3">
+              <div className="flex gap-2">
+                <input
+                  type="text"
+                  value={code}
+                  onChange={(e) => {
+                    setCode(e.target.value);
+                    if (status === 'error') setStatus('idle');
+                  }}
+                  onKeyDown={(e) => e.key === 'Enter' && handleActivate()}
+                  placeholder="输入邀请码"
+                  disabled={status === 'loading' || status === 'success'}
+                  className={[
+                    'flex-1 px-4 py-3 rounded-xl border text-sm outline-none transition-colors',
+                    status === 'error'
+                      ? 'border-red-400 bg-red-50 text-red-700 placeholder:text-red-300'
+                      : 'border-[#e5e5ea] bg-[#f5f5f7] text-[#1d1d1f] placeholder:text-[#aeaeb2]',
+                    'focus:border-amber-400 focus:bg-white',
+                    'disabled:opacity-50',
+                  ].join(' ')}
+                />
+                <button
+                  onClick={handleActivate}
+                  disabled={!code.trim() || status === 'loading' || status === 'success'}
+                  className="px-5 py-3 rounded-xl bg-gradient-to-r from-amber-400 to-amber-500 text-white font-semibold text-sm disabled:opacity-50 disabled:cursor-not-allowed transition-opacity flex items-center gap-1.5"
+                >
+                  {status === 'loading' ? (
+                    <Loader2 className="w-4 h-4 animate-spin" />
+                  ) : status === 'success' ? (
+                    '✓'
+                  ) : (
+                    '激活'
+                  )}
+                </button>
+              </div>
+              {status === 'error' && (
+                <p className="text-xs text-red-500 mt-1.5 pl-1">{errorMsg}</p>
+              )}
+              {status === 'success' && (
+                <p className="text-xs text-green-600 mt-1.5 pl-1 font-medium">已解锁 PRO，享受名人视角！</p>
+              )}
+            </div>
+
+            <p className="text-xs text-[#aeaeb2] text-center">
+              没有邀请码？联系开发者获取内测资格
+            </p>
           </motion.div>
         </>
       )}
