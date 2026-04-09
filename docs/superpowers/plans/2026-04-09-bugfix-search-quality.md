@@ -69,6 +69,7 @@ else:
 
 ## 执行顺序
 
-- [x] **问题1** — `llm.py` AMAP_CATEGORY_CODES 类型码清理（本次）
-- [ ] **问题3** — `amap.py` + `intent_parser.py` budget_text 读取 per_cost（下一步）
-- [ ] **问题2** — 前后端 risk_label 字段下线（随后）
+- [x] **问题1** — `llm.py` AMAP_CATEGORY_CODES 类型码清理
+- [x] **问题2** — `routes.py` risk_label 返回 null，移除模板调用
+- [x] **问题3** — `amap.py` per_cost + `intent_parser.py` budget_text 读真实人均价
+- [x] **问题4** — 问题1修复后自动改善
